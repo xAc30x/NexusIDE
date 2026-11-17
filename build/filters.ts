@@ -233,6 +233,9 @@ export const copyrightFilter = Object.freeze<string[]>([
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
+
+	// NexusIDE code uses its own copyright header, checked by eslint
+	'!src/vs/platform/ai/**',
 ]);
 
 export const tsFormattingFilter = Object.freeze<string[]>([
