@@ -105,6 +105,9 @@ export interface IAIStreamReadResult {
 
 export const IAIService = createDecorator<IAIService>('aiService');
 
+/** Name of the IPC channel through which renderers reach {@link IAIService}. */
+export const AI_CHANNEL_NAME = 'ai';
+
 /**
  * Main-process AI service. Provider routing, process spawning and API key
  * handling stay in the main process; renderers use this interface over IPC.

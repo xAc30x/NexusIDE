@@ -37,6 +37,9 @@ import { DiagnosticsMainService, IDiagnosticsMainService } from '../../platform/
 import { DialogMainService, IDialogMainService } from '../../platform/dialogs/electron-main/dialogMainService.js';
 import { IEncryptionMainService } from '../../platform/encryption/common/encryptionService.js';
 import { EncryptionMainService } from '../../platform/encryption/electron-main/encryptionMainService.js';
+import { AI_CHANNEL_NAME, IAIService } from '../../platform/ai/common/ai.js';
+import { AIService } from '../../platform/ai/common/aiService.js';
+import { EchoProvider } from '../../platform/ai/common/echoProvider.js';
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
@@ -1269,6 +1272,9 @@ export class CodeApplication extends Disposable {
 		// Encryption
 		services.set(IEncryptionMainService, new SyncDescriptor(EncryptionMainService));
 
+		// NexusIDE AI (the echo provider is only offered when running from source)
+		services.set(IAIService, new SyncDescriptor(AIService, [this.environmentMainService.isBuilt ? [] : [new EchoProvider()]]));
+
 		// Browser View
 		services.set(IBrowserViewMainService, new SyncDescriptor(BrowserViewMainService, undefined, false /* proxied to other processes */));
 		services.set(IBrowserViewGroupMainService, new SyncDescriptor(BrowserViewGroupMainService, undefined, false /* proxied to other processes */));
@@ -1443,6 +1449,11 @@ export class CodeApplication extends Disposable {
 		// Encryption
 		const encryptionChannel = ProxyChannel.fromService(accessor.get(IEncryptionMainService), disposables);
 		mainProcessElectronServer.registerChannel('encryption', encryptionChannel);
+
+		// NexusIDE AI. Stream events are not buffered for late listeners because
+		// readStream lets a renderer catch up on missed chunks.
+		const aiChannel = ProxyChannel.fromService(accessor.get(IAIService), disposables, { unbufferedEvents: ['onDidStreamDelta'] });
+		mainProcessElectronServer.registerChannel(AI_CHANNEL_NAME, aiChannel);
 
 		// Browser View
 		const browserViewChannel = ProxyChannel.fromService(accessor.get(IBrowserViewMainService), disposables, { unbufferedEvents: ['onDidCreateBrowserView'] });
