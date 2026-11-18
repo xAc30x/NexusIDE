@@ -89,6 +89,13 @@ export function buildClaudeCliArgs(request: IAIMessageRequest): string[] {
 		'--include-partial-messages',
 		'--verbose',
 		'--no-session-persistence',
+		// The working folder may come from anywhere. --restricted ignores user,
+		// project and local settings files, so a folder's own settings cannot
+		// add hooks that run commands or pre-approve tools, and it keeps the
+		// file tools inside the working directory. --strict-mcp-config skips
+		// MCP servers from the folder's .mcp.json, which would start programs.
+		'--restricted',
+		'--strict-mcp-config',
 	];
 	switch (request.mode) {
 		case 'ask':
@@ -102,13 +109,10 @@ export function buildClaudeCliArgs(request: IAIMessageRequest): string[] {
 		case 'debug':
 			// Tool calls that are not pre-approved are sent to us as control
 			// requests on stdout and answered on stdin, so the prompt is sent as a
-			// stream-json message. --restricted keeps file tools inside the working
-			// directory and ignores user and project settings, so no settings file
-			// can pre-approve tools behind the user's back.
+			// stream-json message.
 			args.push(
 				'--input-format', 'stream-json',
 				'--permission-prompt-tool', 'stdio',
-				'--restricted',
 				'--tools', AGENT_TOOLS,
 				'--allowedTools', READ_ONLY_TOOLS,
 			);

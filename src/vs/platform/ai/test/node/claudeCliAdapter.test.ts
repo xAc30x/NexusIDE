@@ -239,12 +239,20 @@ suite('ClaudeCliAdapter', function () {
 
 	test('builds read-only arguments for ask and plan mode', () => {
 		const ask = buildClaudeCliArgs(request('secret prompt'));
-		assert.deepStrictEqual(ask.slice(0, 9), ['-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--no-session-persistence', '--tools', 'Read,Grep,Glob', '--permission-mode']);
-		assert.strictEqual(ask[9], 'dontAsk');
+		assert.deepStrictEqual(ask, ['-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--no-session-persistence', '--restricted', '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--permission-mode', 'dontAsk']);
 		assert.ok(!ask.includes('secret prompt'));
 
 		const plan = buildClaudeCliArgs(request('p', { mode: 'plan', model: 'opus' }));
 		assert.deepStrictEqual(plan.slice(-4), ['--permission-mode', 'plan', '--model', 'opus']);
+	});
+
+	test('every mode ignores the settings files and MCP servers of the working folder', () => {
+		for (const mode of ['ask', 'plan', 'agent', 'debug'] as const) {
+			const args = buildClaudeCliArgs(request('p', { mode }));
+			assert.ok(args.includes('--restricted'), `${mode} mode must pass --restricted`);
+			assert.ok(args.includes('--strict-mcp-config'), `${mode} mode must pass --strict-mcp-config`);
+			assert.ok(!args.includes('--mcp-config') && !args.includes('--settings') && !args.includes('--setting-sources'), `${mode} mode must not load other settings`);
+		}
 	});
 
 	test('refuses model names that could be read as CLI options', () => {
@@ -254,10 +262,9 @@ suite('ClaudeCliAdapter', function () {
 	});
 
 	test('builds agent arguments that send tool approvals to the host', () => {
-		assert.deepStrictEqual(buildClaudeCliArgs(request('p', { mode: 'agent' })).slice(6), [
+		assert.deepStrictEqual(buildClaudeCliArgs(request('p', { mode: 'agent' })).slice(8), [
 			'--input-format', 'stream-json',
 			'--permission-prompt-tool', 'stdio',
-			'--restricted',
 			'--tools', 'Read,Grep,Glob,Edit,Write,Bash',
 			'--allowedTools', 'Read,Grep,Glob',
 		]);
