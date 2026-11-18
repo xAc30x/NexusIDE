@@ -5,8 +5,10 @@
 
 import assert from 'assert';
 import { spawnSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { suite, test } from 'node:test';
+import { checkExtensionsGallery } from '../../hygiene.ts';
 
 suite('hygiene', () => {
 
@@ -27,6 +29,56 @@ suite('hygiene', () => {
 		}, {
 			status: 1,
 			hasNoMatchError: true,
+		});
+	});
+
+	suite('extensionsGallery in product.json', () => {
+
+		const openVsx = {
+			serviceUrl: 'https://open-vsx.org/vscode/gallery',
+			itemUrl: 'https://open-vsx.org/vscode/item',
+			resourceUrlTemplate: 'https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}',
+			extensionUrlTemplate: 'https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest',
+		};
+
+		test('allows a missing entry and an Open VSX entry', () => {
+			assert.strictEqual(checkExtensionsGallery(undefined), undefined);
+			assert.strictEqual(checkExtensionsGallery(openVsx), undefined);
+		});
+
+		test('allows the entry in the repository product.json', () => {
+			const product = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '../../../product.json'), 'utf8'));
+			assert.ok(product.extensionsGallery, 'product.json configures a marketplace');
+			assert.strictEqual(checkExtensionsGallery(product.extensionsGallery), undefined);
+		});
+
+		test('rejects any other marketplace host', () => {
+			for (const serviceUrl of [
+				'https://marketplace.visualstudio.com/_apis/public/gallery',
+				'https://open-vsx.org.example.com/vscode/gallery',
+				'https://example.com/open-vsx.org/vscode/gallery',
+				'https://evil.open-vsx.org/vscode/gallery',
+			]) {
+				assert.ok(checkExtensionsGallery({ ...openVsx, serviceUrl })?.includes('extensionsGallery.serviceUrl'), serviceUrl);
+			}
+		});
+
+		test('rejects plain http, a port, credentials and values that are not URLs', () => {
+			for (const itemUrl of [
+				'http://open-vsx.org/vscode/item',
+				'https://open-vsx.org:8443/vscode/item',
+				'https://user:pass@open-vsx.org/vscode/item',
+				'open-vsx.org/vscode/item',
+			]) {
+				assert.ok(checkExtensionsGallery({ ...openVsx, itemUrl })?.includes('extensionsGallery.itemUrl'), itemUrl);
+			}
+			assert.ok(checkExtensionsGallery({ ...openVsx, itemUrl: 42 })?.includes('extensionsGallery.itemUrl'));
+		});
+
+		test('rejects an entry that is not an object', () => {
+			for (const gallery of [null, 'https://open-vsx.org/vscode/gallery', ['https://open-vsx.org/vscode/gallery']]) {
+				assert.ok(checkExtensionsGallery(gallery), JSON.stringify(gallery));
+			}
 		});
 	});
 });
