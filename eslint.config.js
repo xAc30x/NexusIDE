@@ -156,6 +156,7 @@ export default defineConfig(
 		files: [
 			'src/vs/platform/ai/**/*.ts',
 			'src/vs/workbench/services/ai/**/*.ts',
+			'src/vs/workbench/contrib/nexusChat/**/*.ts',
 		],
 		rules: {
 			'header/header': [

@@ -237,6 +237,7 @@ export const copyrightFilter = Object.freeze<string[]>([
 	// NexusIDE code uses its own copyright header, checked by eslint
 	'!src/vs/platform/ai/**',
 	'!src/vs/workbench/services/ai/**',
+	'!src/vs/workbench/contrib/nexusChat/**',
 ]);
 
 export const tsFormattingFilter = Object.freeze<string[]>([
