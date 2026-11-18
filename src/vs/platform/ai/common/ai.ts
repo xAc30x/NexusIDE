@@ -25,7 +25,8 @@ export type AIResult<T> =
  * - `ask`: read-only questions about the codebase.
  * - `plan`: produces a markdown task list and proposed file changes.
  * - `agent`: may read and write files and run terminal commands.
- * - `debug`: analyses stack traces, test logs and failing code paths.
+ * - `debug`: like `agent`, focused on reproducing a bug, explaining its root cause and fixing it.
+ *   The chat panel calls it Fix mode, so it is not confused with the Run and Debug view.
  */
 export const AI_EXECUTION_MODES = ['ask', 'plan', 'agent', 'debug'] as const;
 export type AIExecutionMode = typeof AI_EXECUTION_MODES[number];

@@ -6,6 +6,7 @@
 import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ModesRegistry } from '../../../../../editor/common/languages/modesRegistry.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
@@ -14,12 +15,14 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { TestClipboardService } from '../../../../../platform/clipboard/test/common/testClipboardService.js';
 import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { MarkerService } from '../../../../../platform/markers/common/markerService.js';
+import { IMarkerService, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
 import { Event } from '../../../../../base/common/event.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAIProviderInfo, IAIService } from '../../../../../platform/ai/common/ai.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
+import { TestWorkspace, testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { IViewContainerModel, IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../common/views.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { WebviewInput } from '../../../webviewPanel/browser/webviewEditorInput.js';
@@ -79,6 +82,9 @@ suite('NexusChatViewPane', () => {
 		instantiationService.stub(IViewDescriptorService, new TestViewDescriptorService());
 		instantiationService.stub(IViewsService, new TestViewsService());
 		instantiationService.stub(IAIService, aiService);
+		// The default test marker service does nothing; Fix mode reads real markers.
+		const markerService = store.add(new MarkerService());
+		instantiationService.stub(IMarkerService, markerService);
 		// Code blocks are highlighted with the editor font.
 		instantiationService.stub(IConfigurationService, new TestConfigurationService({ editor: { fontFamily: 'monospace' } }));
 		if (options.noFolder) {
@@ -151,7 +157,7 @@ suite('NexusChatViewPane', () => {
 			status: message.querySelector<HTMLElement>('.nexus-chat-message-status')?.textContent,
 		}));
 
-		return { aiService, pane, query, input, pressEnter, messageTexts, artifacts };
+		return { aiService, pane, query, input, pressEnter, messageTexts, artifacts, markerService };
 	}
 
 	test('sends with Enter, streams the reply as markdown and switches Send to Stop', async () => {
@@ -235,7 +241,8 @@ suite('NexusChatViewPane', () => {
 	test('Agent mode shows tool activity and Allow/Deny cards that send the answer', async () => {
 		const { aiService, pane, query, input, pressEnter } = await createPane([provider('claude-cli', true)]);
 		const modeSelect = query<HTMLSelectElement>('.nexus-chat-select');
-		assert.deepStrictEqual([...modeSelect.options].map(option => option.value), ['ask', 'plan', 'agent']);
+		// The debug mode is labelled Fix, so it is not confused with the Run and Debug view.
+		assert.deepStrictEqual([...modeSelect.options].map(option => [option.value, option.textContent]), [['ask', 'Ask'], ['plan', 'Plan'], ['agent', 'Agent'], ['debug', 'Fix']]);
 		modeSelect.value = 'agent';
 		input.value = 'clean up';
 		pressEnter();
@@ -277,6 +284,24 @@ suite('NexusChatViewPane', () => {
 		aiService.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r3', toolName: 'Edit', summary: 'Edit b.ts' });
 		aiService.hub.end(streamId, 'cancelled');
 		assert.strictEqual(cards()[2].buttons, 'Allow (disabled), Deny (disabled)', 'requests of an ended reply cannot be answered');
+	});
+
+	test('Fix mode sends the Problems panel errors of the folder with the prompt', async () => {
+		const { aiService, query, input, pressEnter, messageTexts, markerService } = await createPane([provider('claude-cli', true)]);
+		const workspaceFile = joinPath(TestWorkspace.folders[0].uri, 'src', 'app.ts');
+		markerService.changeOne('test', workspaceFile, [{ severity: MarkerSeverity.Error, message: 'Cannot find name x', startLineNumber: 4, startColumn: 1, endLineNumber: 4, endColumn: 2, source: 'ts' }]);
+		markerService.changeOne('test', URI.file('/elsewhere/other.ts'), [{ severity: MarkerSeverity.Error, message: 'not in the folder', startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 2 }]);
+
+		query<HTMLSelectElement>('.nexus-chat-select').value = 'debug';
+		input.value = 'why does it fail?';
+		pressEnter();
+		await settle();
+
+		assert.deepStrictEqual({ mode: aiService.requests[0].mode, prompt: aiService.requests[0].prompt, user: messageTexts()[0] }, {
+			mode: 'debug',
+			prompt: 'why does it fail?\n\n<problems source="NexusIDE Problems panel">\nsrc/app.ts:4:1 error: Cannot find name x (ts)\n</problems>',
+			user: { role: 'You', text: 'why does it fail?', status: 'Included 1 problem from the Problems panel.' },
+		});
 	});
 
 	test('Agent mode explains that it needs an open folder and sends nothing', async () => {

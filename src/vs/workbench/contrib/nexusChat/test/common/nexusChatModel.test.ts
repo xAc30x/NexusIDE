@@ -340,6 +340,18 @@ suite('NexusChatModel', () => {
 		]);
 	});
 
+	test('sends an attachment with the prompt but shows only its label', async () => {
+		const service = createService();
+		const model = createModel(service);
+		await model.send('why does it fail?', { mode: 'debug', providerId: 'test', attachment: { label: 'Included 1 problem.', text: '<problems>\na.ts:1:1 error: boom\n</problems>' } });
+
+		assert.strictEqual(service.requests[0].prompt, 'why does it fail?\n\n<problems>\na.ts:1:1 error: boom\n</problems>');
+		assert.deepStrictEqual(model.messages.map(({ role, text, attachmentLabel }) => ({ role, text, attachmentLabel })), [
+			{ role: 'user', text: 'why does it fail?', attachmentLabel: 'Included 1 problem.' },
+			{ role: 'assistant', text: '', attachmentLabel: undefined },
+		]);
+	});
+
 	test('picks the preferred provider when it is available, otherwise the first available one', () => {
 		const info = (id: string, available: boolean): IAIProviderInfo => ({ id, displayName: id, kind: 'cli', available });
 		const providers = [info('claude-cli', false), info('echo', true), info('other', true)];

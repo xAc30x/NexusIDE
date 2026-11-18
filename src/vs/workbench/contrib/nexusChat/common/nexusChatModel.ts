@@ -42,6 +42,17 @@ export interface INexusChatMessage {
 	readonly error?: string;
 	/** Set when part of the reply could not be recovered. */
 	readonly warning?: string;
+	/** Describes context that was sent with a prompt but is not shown, for example problems from the Problems panel. */
+	readonly attachmentLabel?: string;
+}
+
+/**
+ * Context sent with a prompt. `text` is added to the prompt for the AI; the
+ * chat shows only `label`.
+ */
+export interface INexusChatAttachment {
+	readonly label: string;
+	readonly text: string;
 }
 
 export interface INexusChatSendOptions {
@@ -49,6 +60,7 @@ export interface INexusChatSendOptions {
 	readonly providerId: string;
 	/** Absolute folder the provider works in, usually the first workspace folder. */
 	readonly workingDirectory?: string;
+	readonly attachment?: INexusChatAttachment;
 }
 
 export const LOST_TEXT_WARNING = 'Part of this reply was lost because it was too long to keep.';
@@ -62,6 +74,7 @@ interface IMutableMessage {
 	state: NexusChatMessageState;
 	error?: string;
 	warning?: string;
+	attachmentLabel?: string;
 }
 
 /** Tracks the reply that is currently streaming. */
@@ -128,7 +141,10 @@ export class NexusChatModel extends Disposable {
 			return { ok: false, error: 'Wait for the current reply to finish, or stop it.' };
 		}
 
-		this._messages.push({ id: generateUuid(), role: 'user', text: prompt, parts: [{ kind: 'text', text: prompt }], state: 'completed' });
+		this._messages.push({
+			id: generateUuid(), role: 'user', text: prompt, parts: [{ kind: 'text', text: prompt }], state: 'completed',
+			...(options.attachment ? { attachmentLabel: options.attachment.label } : {}),
+		});
 		const reply: IMutableMessage = { id: generateUuid(), role: 'assistant', text: '', parts: [], state: 'streaming' };
 		this._messages.push(reply);
 		const active: IActiveReply = { message: reply, streamId: undefined, nextCursor: 0, catchingUp: false, catchUpAgain: false };
@@ -141,7 +157,7 @@ export class NexusChatModel extends Disposable {
 				threadId: this._threadId,
 				providerId: options.providerId,
 				mode: options.mode,
-				prompt,
+				prompt: options.attachment ? `${prompt}\n\n${options.attachment.text}` : prompt,
 				workingDirectory: options.workingDirectory,
 			});
 		} catch (error) {
