@@ -221,6 +221,9 @@ import './contrib/keybindingsExport/electron-browser/keybindingsExport.contribut
 // System-wide (OS global) Keybindings
 import './contrib/keybindings/electron-browser/systemWideKeybindings.contribution.js';
 
+// NexusIDE Chat (needs the AI service, which only runs in the desktop app)
+import './contrib/nexusChat/browser/nexusChat.contribution.js';
+
 //#endregion
 
 

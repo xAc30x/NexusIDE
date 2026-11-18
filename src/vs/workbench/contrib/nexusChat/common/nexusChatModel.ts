@@ -7,7 +7,7 @@ import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
-import { AIExecutionMode, AIResult, AIStreamChunk, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../platform/ai/common/ai.js';
+import { AIExecutionMode, AIResult, AIStreamChunk, IAIProviderInfo, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../platform/ai/common/ai.js';
 
 export type NexusChatRole = 'user' | 'assistant';
 
@@ -28,7 +28,8 @@ export interface INexusChatMessage {
 	readonly warning?: string;
 }
 
-export interface INexusChatModelOptions {
+export interface INexusChatSendOptions {
+	readonly mode: AIExecutionMode;
 	readonly providerId: string;
 	/** Absolute folder the provider works in, usually the first workspace folder. */
 	readonly workingDirectory?: string;
@@ -78,7 +79,6 @@ export class NexusChatModel extends Disposable {
 	private active: IActiveReply | undefined;
 
 	constructor(
-		private readonly options: INexusChatModelOptions,
 		@IAIService private readonly aiService: IAIService,
 	) {
 		super();
@@ -102,7 +102,7 @@ export class NexusChatModel extends Disposable {
 	 * changing the chat if the prompt is empty or a reply is still running.
 	 * If the service refuses the request, the reply is marked as failed.
 	 */
-	async send(prompt: string, mode: AIExecutionMode): Promise<AIResult<void>> {
+	async send(prompt: string, options: INexusChatSendOptions): Promise<AIResult<void>> {
 		if (prompt.trim().length === 0) {
 			return { ok: false, error: 'Type a message first.' };
 		}
@@ -121,10 +121,10 @@ export class NexusChatModel extends Disposable {
 		try {
 			result = await this.aiService.sendMessage({
 				threadId: this._threadId,
-				providerId: this.options.providerId,
-				mode,
+				providerId: options.providerId,
+				mode: options.mode,
 				prompt,
-				workingDirectory: this.options.workingDirectory,
+				workingDirectory: options.workingDirectory,
 			});
 		} catch (error) {
 			result = { ok: false, error: getErrorMessage(error) || 'The AI service could not be reached.' };
@@ -280,4 +280,14 @@ export class NexusChatModel extends Disposable {
 		}
 		this._onDidChange.fire();
 	}
+}
+
+/**
+ * Chooses the provider for the next message: the preferred one if it is
+ * available, otherwise the first available one, in the order the service
+ * lists them.
+ */
+export function pickProvider(providers: readonly IAIProviderInfo[], preferredId: string | undefined): IAIProviderInfo | undefined {
+	const available = providers.filter(provider => provider.available);
+	return available.find(provider => provider.id === preferredId) ?? available[0];
 }
