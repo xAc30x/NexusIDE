@@ -29,6 +29,8 @@ import { WebviewInput } from '../../../webviewPanel/browser/webviewEditorInput.j
 import { IWebviewWorkbenchService } from '../../../webviewPanel/browser/webviewWorkbenchService.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { TestViewsService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
+import { TestWorkspaceTrustManagementService, TestWorkspaceTrustRequestService } from '../../../../test/common/workbenchTestServices.js';
+import { IWorkspaceTrustManagementService, IWorkspaceTrustRequestService, WorkspaceTrustRequestOptions } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { PREVIEW_CONTENT_SECURITY_POLICY } from '../../browser/nexusChatPreview.js';
 import { NexusChatViewPane } from '../../browser/nexusChatView.js';
 import { TestAIService } from '../common/testAIService.js';
@@ -75,7 +77,7 @@ suite('NexusChatViewPane', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function createPane(providers: readonly IAIProviderInfo[], options: { readonly noFolder?: boolean } = {}) {
+	async function createPane(providers: readonly IAIProviderInfo[], options: { readonly noFolder?: boolean; readonly untrusted?: boolean } = {}) {
 		const aiService = store.add(new TestAIService());
 		aiService.providers = providers;
 		const instantiationService = workbenchInstantiationService(undefined, store);
@@ -90,6 +92,18 @@ suite('NexusChatViewPane', () => {
 		if (options.noFolder) {
 			instantiationService.stub(IWorkspaceContextService, 'getWorkspace', () => testWorkspace());
 		}
+
+		// Restricted Mode: the trust request is recorded and answered with "trust".
+		const trust = store.add(new TestWorkspaceTrustManagementService(!options.untrusted));
+		instantiationService.stub(IWorkspaceTrustManagementService, trust);
+		const trustRequests: (WorkspaceTrustRequestOptions | undefined)[] = [];
+		instantiationService.stub(IWorkspaceTrustRequestService, store.add(new class extends TestWorkspaceTrustRequestService {
+			override async requestWorkspaceTrust(requestOptions?: WorkspaceTrustRequestOptions): Promise<boolean> {
+				trustRequests.push(requestOptions);
+				await trust.setWorkspaceTrust(true);
+				return true;
+			}
+		}(true)));
 
 		// Records what code block buttons do instead of touching real editors, files and the clipboard.
 		const clipboard = new TestClipboardService();
@@ -157,7 +171,7 @@ suite('NexusChatViewPane', () => {
 			status: message.querySelector<HTMLElement>('.nexus-chat-message-status')?.textContent,
 		}));
 
-		return { aiService, pane, query, input, pressEnter, messageTexts, artifacts, markerService };
+		return { aiService, pane, query, input, pressEnter, messageTexts, artifacts, markerService, trust, trustRequests };
 	}
 
 	test('sends with Enter, streams the reply as markdown and switches Send to Stop', async () => {
@@ -414,5 +428,44 @@ suite('NexusChatViewPane', () => {
 
 		pane.newChat();
 		assert.deepStrictEqual(messageTexts(), []);
+	});
+
+	test('in Restricted Mode the panel sends nothing and offers to trust the folder', async () => {
+		const { aiService, query, input, pressEnter, messageTexts, trustRequests } = await createPane([provider('claude-cli', true)], { untrusted: true });
+
+		const banner = query<HTMLElement>('.nexus-chat-trust');
+		assert.strictEqual(banner.style.display, 'flex');
+		assert.ok(query('.nexus-chat-send').classList.contains('disabled'), 'Send is disabled');
+
+		input.value = 'hi';
+		pressEnter();
+		await settle();
+		assert.strictEqual(aiService.requests.length, 0, 'nothing is sent in Restricted Mode');
+		assert.deepStrictEqual(messageTexts(), []);
+		assert.strictEqual(input.value, 'hi', 'the prompt is kept');
+
+		query<HTMLElement>('.nexus-chat-trust .monaco-button').click();
+		await settle();
+		assert.strictEqual(trustRequests.length, 1);
+		assert.strictEqual(banner.style.display, 'none');
+		assert.ok(!query('.nexus-chat-send').classList.contains('disabled'), 'Send is enabled once the folder is trusted');
+
+		pressEnter();
+		await settle();
+		assert.strictEqual(aiService.requests.length, 1);
+	});
+
+	test('a reply is stopped when the folder stops being trusted', async () => {
+		const { aiService, query, input, pressEnter, trust } = await createPane([provider('claude-cli', true)]);
+		assert.strictEqual(query<HTMLElement>('.nexus-chat-trust').style.display, 'none');
+		input.value = 'hi';
+		pressEnter();
+		await settle();
+
+		await trust.setWorkspaceTrust(false);
+		await settle();
+		assert.strictEqual(aiService.cancelledThreads.length, 1);
+		assert.strictEqual(query<HTMLElement>('.nexus-chat-trust').style.display, 'flex');
+		assert.ok(!query('.nexus-chat-send').classList.contains('disabled'), 'Stop stays available while the reply is running');
 	});
 });

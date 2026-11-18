@@ -25,6 +25,7 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService, IWorkspaceTrustRequestService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
 import { INexusChatAttachment, INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
@@ -96,6 +97,7 @@ export class NexusChatViewPane extends ViewPane {
 	private providerSelect: HTMLSelectElement | undefined;
 	private sendButton: Button | undefined;
 	private notice: HTMLElement | undefined;
+	private trustBanner: HTMLElement | undefined;
 	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
@@ -124,6 +126,8 @@ export class NexusChatViewPane extends ViewPane {
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 		@IMarkerService private readonly markerService: IMarkerService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@IWorkspaceTrustRequestService private readonly workspaceTrustRequestService: IWorkspaceTrustRequestService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this.codeBlockRenderer = instantiationService.createInstance(NexusChatCodeBlockRenderer);
@@ -135,6 +139,7 @@ export class NexusChatViewPane extends ViewPane {
 				void this.refreshProviders();
 			}
 		}));
+		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.updateTrustState()));
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -187,8 +192,17 @@ export class NexusChatViewPane extends ViewPane {
 
 		this.notice = append(inputArea, $('.nexus-chat-notice', { role: 'status' }));
 
+		const trustBanner = this.trustBanner = append(inputArea, $('.nexus-chat-trust', { role: 'status' }));
+		append(trustBanner, $('.nexus-chat-trust-text')).textContent = localize('nexusChat.untrusted', "This folder is in Restricted Mode, so the chat is turned off. A folder can include its own AI settings that run commands. Only trust folders whose author you trust.");
+		const trustButton = this._register(new Button(trustBanner, { ...defaultButtonStyles, small: true }));
+		trustButton.label = localize('nexusChat.trustFolder', "Trust This Folder…");
+		this._register(trustButton.onDidClick(() => void this.workspaceTrustRequestService.requestWorkspaceTrust({
+			message: localize('nexusChat.trustMessage', "NexusIDE Chat runs the AI in this folder. Trust the folder only if you trust its author, because its settings can run commands."),
+		})));
+
 		this.renderProviders();
 		this.renderMessages();
+		this.updateTrustState();
 		void this.refreshProviders();
 	}
 
@@ -213,6 +227,13 @@ export class NexusChatViewPane extends ViewPane {
 
 	private async submit(): Promise<void> {
 		if (!this.input || this.model.isRunning) {
+			return;
+		}
+		// Checked on every send, not only through the disabled button: the AI
+		// runs in the workspace folder, and an untrusted folder can carry
+		// settings that run commands.
+		if (!this.workspaceTrustManagementService.isWorkspaceTrusted()) {
+			this.updateTrustState();
 			return;
 		}
 		if (!this.providersLoaded || !pickProvider(this.providers, this.selectedProviderId)) {
@@ -467,6 +488,20 @@ export class NexusChatViewPane extends ViewPane {
 		const running = this.model.isRunning;
 		this.sendButton.label = running ? localize('nexusChat.stop', "Stop") : localize('nexusChat.send', "Send");
 		this.sendButton.element.classList.toggle('running', running);
+		// Stop stays available so a reply can always be cancelled.
+		this.sendButton.enabled = running || this.workspaceTrustManagementService.isWorkspaceTrusted();
+	}
+
+	/** Shows the Restricted Mode banner and disables sending while the workspace is not trusted. */
+	private updateTrustState(): void {
+		const trusted = this.workspaceTrustManagementService.isWorkspaceTrusted();
+		if (this.trustBanner) {
+			this.trustBanner.style.display = trusted ? 'none' : 'flex';
+		}
+		if (!trusted && this.model.isRunning) {
+			void this.stop();
+		}
+		this.updateSendButton();
 	}
 
 	private showNotice(text: string | undefined): void {
