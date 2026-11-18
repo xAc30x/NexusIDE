@@ -6,7 +6,7 @@
 import { timeout } from '../../../base/common/async.js';
 import { CancellationToken } from '../../../base/common/cancellation.js';
 import { IAIMessageRequest } from './ai.js';
-import { IAIProviderAdapter } from './aiProvider.js';
+import { IAIProviderAdapter, IAIRunSink } from './aiProvider.js';
 
 export const ECHO_PROVIDER_ID = 'echo';
 
@@ -33,7 +33,7 @@ export class EchoProvider implements IAIProviderAdapter {
 		return true;
 	}
 
-	async run(request: IAIMessageRequest, onText: (text: string) => void, token: CancellationToken): Promise<void> {
+	async run(request: IAIMessageRequest, sink: IAIRunSink, token: CancellationToken): Promise<void> {
 		// Split into words while keeping the whitespace, so the pieces join back
 		// into the original prompt.
 		const pieces = request.prompt.match(/\S+\s*|\s+/g) ?? [];
@@ -41,7 +41,7 @@ export class EchoProvider implements IAIProviderAdapter {
 			if (token.isCancellationRequested) {
 				return;
 			}
-			onText(piece);
+			sink.text(piece);
 			if (this.delayMs > 0) {
 				await timeout(this.delayMs, token);
 			}

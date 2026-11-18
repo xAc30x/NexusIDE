@@ -6,9 +6,12 @@
 import './media/nexusChat.css';
 import { $, addDisposableListener, append, clearNode } from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { AIExecutionMode, IAIProviderInfo, IAIService } from '../../../../platform/ai/common/ai.js';
+import { AIExecutionMode, AIPermissionDecision, IAIProviderInfo, IAIService } from '../../../../platform/ai/common/ai.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
@@ -21,24 +24,43 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
-import { INexusChatMessage, NexusChatModel, pickProvider } from '../common/nexusChatModel.js';
+import { INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
 
 export const NEXUS_CHAT_VIEW_CONTAINER_ID = 'workbench.view.nexusChat';
 export const NEXUS_CHAT_VIEW_ID = 'workbench.view.nexusChat.chat';
 
-/** Modes the panel offers. Agent and Debug wait for an approval UI. */
+/** Modes the panel offers. Debug mode is not supported yet. */
 const PANEL_MODES: readonly { readonly mode: AIExecutionMode; readonly label: string }[] = [
 	{ mode: 'ask', label: localize('nexusChat.mode.ask', "Ask") },
 	{ mode: 'plan', label: localize('nexusChat.mode.plan', "Plan") },
+	{ mode: 'agent', label: localize('nexusChat.mode.agent', "Agent") },
 ];
 
 /** Distance from the bottom, in pixels, within which new text keeps the list scrolled to the end. */
 const STICK_TO_BOTTOM_THRESHOLD = 24;
 
-interface IMessageElements {
+/** The elements of one part, and the part they currently show. */
+interface IPartElements {
 	readonly root: HTMLElement;
-	readonly text: HTMLElement;
-	readonly status: HTMLElement;
+	part: NexusChatPart;
+	update(part: NexusChatPart, canAnswer: boolean): void;
+}
+
+/** The elements of one message. Disposing it removes them and their buttons. */
+class MessageElements implements IDisposable {
+	readonly disposables = new DisposableStore();
+	readonly parts: IPartElements[] = [];
+
+	constructor(
+		readonly root: HTMLElement,
+		readonly body: HTMLElement,
+		readonly status: HTMLElement,
+	) { }
+
+	dispose(): void {
+		this.disposables.dispose();
+		this.root.remove();
+	}
 }
 
 /**
@@ -61,7 +83,9 @@ export class NexusChatViewPane extends ViewPane {
 	private providerSelect: HTMLSelectElement | undefined;
 	private sendButton: Button | undefined;
 	private notice: HTMLElement | undefined;
-	private readonly messageElements = new Map<string, IMessageElements>();
+	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
+	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
+	private readonly answering = new Set<string>();
 
 	constructor(
 		options: IViewPaneOptions,
@@ -95,7 +119,7 @@ export class NexusChatViewPane extends ViewPane {
 		const messageList = this.messageList = append(root, $('.nexus-chat-messages', { role: 'log', 'aria-live': 'polite', tabIndex: 0 }));
 		messageList.setAttribute('aria-label', localize('nexusChat.messages', "Chat messages"));
 		this.emptyState = append(messageList, $('.nexus-chat-empty'));
-		this.emptyState.textContent = localize('nexusChat.empty', "Ask about the code in your open folder. In Ask and Plan mode the AI can read files but cannot change them.");
+		this.emptyState.textContent = localize('nexusChat.empty', "Ask about the code in your open folder. In Ask and Plan mode the AI can only read files. In Agent mode it can also edit files and run commands, after you allow each one.");
 
 		const inputArea = append(root, $('.nexus-chat-input'));
 		const input = this.input = append(inputArea, $('textarea.nexus-chat-prompt')) as HTMLTextAreaElement;
@@ -174,12 +198,15 @@ export class NexusChatViewPane extends ViewPane {
 			return;
 		}
 
+		const mode = this.selectedMode();
+		const workingDirectory = this.workingDirectory();
+		if (mode === 'agent' && workingDirectory === undefined) {
+			this.showNotice(localize('nexusChat.agentNeedsFolder', "Agent mode needs a folder on disk. Open a folder, then try again."));
+			return;
+		}
+
 		const prompt = this.input.value;
-		const result = await this.model.send(prompt, {
-			mode: this.selectedMode(),
-			providerId: provider.id,
-			workingDirectory: this.workingDirectory(),
-		});
+		const result = await this.model.send(prompt, { mode, providerId: provider.id, workingDirectory });
 		if (!result.ok) {
 			this.showNotice(result.error);
 			return;
@@ -194,6 +221,25 @@ export class NexusChatViewPane extends ViewPane {
 		const result = await this.model.stop();
 		if (!result.ok) {
 			this.showNotice(localize('nexusChat.stopFailed', "Could not stop the reply: {0}", result.error));
+		}
+	}
+
+	private async answerPermission(requestId: string, decision: AIPermissionDecision): Promise<void> {
+		if (this.answering.has(requestId)) {
+			return;
+		}
+		this.answering.add(requestId);
+		this.renderMessages();
+		try {
+			const result = await this.model.respondToPermission(requestId, decision);
+			if (!result.ok) {
+				this.showNotice(localize('nexusChat.answerFailed', "Could not send your answer: {0}", result.error));
+			}
+		} finally {
+			this.answering.delete(requestId);
+			if (!this._store.isDisposed) {
+				this.renderMessages();
+			}
 		}
 	}
 
@@ -277,10 +323,9 @@ export class NexusChatViewPane extends ViewPane {
 			}
 			this.updateMessageElements(elements, message);
 		}
-		for (const [id, elements] of this.messageElements) {
+		for (const id of [...this.messageElements.keys()]) {
 			if (!shown.has(id)) {
-				elements.root.remove();
-				this.messageElements.delete(id);
+				this.messageElements.deleteAndDispose(id);
 			}
 		}
 
@@ -290,14 +335,38 @@ export class NexusChatViewPane extends ViewPane {
 		this.updateSendButton();
 	}
 
-	private updateMessageElements(elements: IMessageElements, message: INexusChatMessage): void {
-		if (elements.text.textContent !== message.text) {
-			elements.text.textContent = message.text;
-		}
+	private updateMessageElements(elements: MessageElements, message: INexusChatMessage): void {
+		// Parts are only appended or replaced, so the element at an index always shows the part at that index.
+		message.parts.forEach((part, index) => {
+			const canAnswer = message.state === 'streaming' && part.kind === 'permission' && part.state === 'pending' && !this.answering.has(part.requestId);
+			const existing = elements.parts[index];
+			if (existing && existing.part.kind === part.kind) {
+				existing.update(part, canAnswer);
+			} else {
+				existing?.root.remove();
+				const created = this.createPartElements(elements, part, canAnswer);
+				if (existing) {
+					elements.body.insertBefore(created.root, elements.body.children[index] ?? null);
+				}
+				elements.parts[index] = created;
+			}
+		});
 		const status = messageStatus(message);
 		elements.status.textContent = status ?? '';
 		elements.status.style.display = status ? '' : 'none';
 		elements.root.classList.toggle('failed', message.state === 'failed');
+	}
+
+	private createPartElements(message: MessageElements, part: NexusChatPart, canAnswer: boolean): IPartElements {
+		switch (part.kind) {
+			case 'text':
+				return createTextPart(message.body, part);
+			case 'tool':
+				return createToolPart(message.body, part);
+			case 'permission':
+				// A card always shows the same request: its part is only replaced to change the state.
+				return createPermissionPart(message.body, part, canAnswer, message.disposables, decision => this.answerPermission(part.requestId, decision));
+		}
 	}
 
 	private updateSendButton(): void {
@@ -317,23 +386,108 @@ export class NexusChatViewPane extends ViewPane {
 	}
 }
 
-function createMessageElements(list: HTMLElement, message: INexusChatMessage): IMessageElements {
+function createMessageElements(list: HTMLElement, message: INexusChatMessage): MessageElements {
 	const root = append(list, $(`.nexus-chat-message.${message.role}`));
 	const role = append(root, $('.nexus-chat-message-role'));
 	role.textContent = message.role === 'user'
 		? localize('nexusChat.you', "You")
 		: localize('nexusChat.assistant', "AI");
-	// Plain text only: model output is never interpreted as HTML.
-	const text = append(root, $('.nexus-chat-message-text'));
+	const body = append(root, $('.nexus-chat-message-body'));
 	const status = append(root, $('.nexus-chat-message-status'));
-	return { root, text, status };
+	return new MessageElements(root, body, status);
+}
+
+// Every part is rendered with textContent: model and tool output is never interpreted as HTML.
+
+function createTextPart(container: HTMLElement, initial: NexusChatPart & { readonly kind: 'text' }): IPartElements {
+	const root = append(container, $('.nexus-chat-message-text'));
+	const elements: IPartElements = {
+		root,
+		part: initial,
+		update(part) {
+			if (part.kind === 'text' && root.textContent !== part.text) {
+				root.textContent = part.text;
+			}
+			elements.part = part;
+		},
+	};
+	elements.update(initial, false);
+	return elements;
+}
+
+function createToolPart(container: HTMLElement, initial: NexusChatPart & { readonly kind: 'tool' }): IPartElements {
+	const root = append(container, $('.nexus-chat-tool'));
+	const icon = append(root, $('span'));
+	const label = append(root, $('span.nexus-chat-tool-label'));
+	const elements: IPartElements = {
+		root,
+		part: initial,
+		update(part) {
+			if (part.kind === 'tool') {
+				icon.className = ThemeIcon.asClassName(part.failed ? Codicon.error : Codicon.tools);
+				label.textContent = part.failed
+					? localize('nexusChat.toolFailed', "{0} (failed or denied)", part.summary)
+					: part.summary;
+				root.classList.toggle('failed', part.failed);
+			}
+			elements.part = part;
+		},
+	};
+	elements.update(initial, false);
+	return elements;
+}
+
+function createPermissionPart(container: HTMLElement, initial: NexusChatPart & { readonly kind: 'permission' }, canAnswer: boolean, disposables: DisposableStore, answer: (decision: AIPermissionDecision) => Promise<void>): IPartElements {
+	const root = append(container, $('.nexus-chat-permission', { role: 'group' }));
+	const question = append(root, $('.nexus-chat-permission-question'));
+	question.textContent = localize('nexusChat.permissionQuestion', "Allow the AI to do this?");
+	const summary = append(root, $('.nexus-chat-permission-summary'));
+	const detail = append(root, $('pre.nexus-chat-permission-detail'));
+	const actions = append(root, $('.nexus-chat-permission-actions'));
+	const allow = disposables.add(new Button(actions, { ...defaultButtonStyles, small: true }));
+	allow.label = localize('nexusChat.allow', "Allow");
+	allow.element.classList.add('nexus-chat-allow');
+	disposables.add(allow.onDidClick(() => void answer('allow')));
+	const deny = disposables.add(new Button(actions, { ...defaultButtonStyles, small: true, secondary: true }));
+	deny.label = localize('nexusChat.deny', "Deny");
+	deny.element.classList.add('nexus-chat-deny');
+	disposables.add(deny.onDidClick(() => void answer('deny')));
+	const outcome = append(root, $('.nexus-chat-permission-outcome'));
+
+	const elements: IPartElements = {
+		root,
+		part: initial,
+		update(part, enabled) {
+			if (part.kind !== 'permission') {
+				return;
+			}
+			elements.part = part;
+			root.setAttribute('aria-label', localize('nexusChat.permissionLabel', "Permission request: {0}", part.summary));
+			summary.textContent = part.summary;
+			// The detail is only shown when it adds something, for example the full command.
+			const showDetail = part.detail !== undefined && part.detail !== part.summary;
+			detail.textContent = showDetail ? part.detail ?? '' : '';
+			detail.style.display = showDetail ? '' : 'none';
+			allow.enabled = enabled;
+			deny.enabled = enabled;
+			actions.style.display = part.state === 'pending' ? '' : 'none';
+			outcome.textContent = part.state === 'allowed'
+				? localize('nexusChat.allowed', "Allowed.")
+				: part.state === 'denied' ? localize('nexusChat.denied', "Denied.") : '';
+			outcome.style.display = part.state === 'pending' ? 'none' : '';
+			root.classList.toggle('pending', part.state === 'pending');
+			root.classList.toggle('denied', part.state === 'denied');
+		},
+	};
+	elements.update(initial, canAnswer);
+	return elements;
 }
 
 function messageStatus(message: INexusChatMessage): string | undefined {
 	const parts: string[] = [];
 	switch (message.state) {
 		case 'streaming':
-			if (message.text.length === 0) {
+			if (message.parts.length === 0) {
 				parts.push(localize('nexusChat.thinking', "Thinking…"));
 			}
 			break;

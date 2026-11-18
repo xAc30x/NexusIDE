@@ -5,7 +5,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { ClaudeStreamEvent, ClaudeStreamParser, LineBuffer } from '../../common/claudeStreamParser.js';
+import { isWindows } from '../../../../base/common/platform.js';
+import { ClaudeStreamEvent, ClaudeStreamParser, describeToolUse, LineBuffer } from '../../common/claudeStreamParser.js';
 
 function line(value: object): string {
 	return JSON.stringify(value);
@@ -110,9 +111,72 @@ suite('ClaudeStreamParser', () => {
 			[{ kind: 'result', isError: true, errorMessage: 'Claude CLI reported error_max_turns.' }]);
 	});
 
+	test('reports permission requests, unknown control requests and finished tool calls', () => {
+		const parser = new ClaudeStreamParser();
+		const input = { file_path: '/w/a.ts', content: 'x' };
+		assert.deepStrictEqual(parseAll(parser, [
+			line({ type: 'control_request', request_id: 'r1', request: { subtype: 'can_use_tool', tool_name: 'Write', input } }),
+			line({ type: 'control_request', request_id: 'r2', request: { subtype: 'interrupt' } }),
+			line({ type: 'control_request', request: { subtype: 'can_use_tool' } }),
+			line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Write', input }, { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } }] } }),
+			line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', is_error: true }, { type: 'tool_result', tool_use_id: 'unknown' }] } }),
+			line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }, { type: 'tool_result', tool_use_id: 't1' }] } }),
+		]), [
+			{ kind: 'permission', requestId: 'r1', toolName: 'Write', input },
+			{ kind: 'unsupportedControl', requestId: 'r2', subtype: 'interrupt' },
+			{ kind: 'toolResult', toolName: 'Bash', input: { command: 'ls' }, isError: true },
+			{ kind: 'toolResult', toolName: 'Write', input, isError: false },
+		]);
+		assert.strictEqual(parser.ignoredLineCount, 1, 'the control request without an id is ignored');
+	});
+
 	test('ignores and counts lines that are not understood', () => {
 		const parser = new ClaudeStreamParser();
 		assert.deepStrictEqual(parseAll(parser, ['not json', '[1,2]', '"text"', line({ type: 'assistant', message: 'oops' }), '', '   ']), []);
 		assert.strictEqual(parser.ignoredLineCount, 4);
+	});
+});
+
+suite('describeToolUse', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const root = isWindows ? 'C:\\work' : '/work';
+	const inRoot = (...parts: string[]) => [root, ...parts].join(isWindows ? '\\' : '/');
+	const outside = isWindows ? 'C:\\other\\secret.txt' : '/other/secret.txt';
+
+	test('describes the common tools', () => {
+		const longCommand = 'npm test -- ' + 'x'.repeat(200);
+		assert.deepStrictEqual([
+			describeToolUse('Edit', { file_path: inRoot('src', 'app.ts'), old_string: 'a', new_string: 'b' }, root),
+			describeToolUse('Write', { file_path: outside, content: 'hi' }, root),
+			describeToolUse('Read', { file_path: 'relative.txt' }, root),
+			describeToolUse('Bash', { command: 'npm test', description: 'Run tests' }, root),
+			describeToolUse('Bash', { command: 'echo safe\nrm -rf ~' }, root),
+			describeToolUse('Bash', { command: longCommand }, root).summary.length,
+			describeToolUse('Grep', { pattern: 'TODO', path: inRoot('src') }, root),
+			describeToolUse('Glob', { pattern: '**/*.ts' }, undefined),
+		], [
+			{ summary: `Edit ${['src', 'app.ts'].join(isWindows ? '\\' : '/')}`, detail: inRoot('src', 'app.ts') },
+			{ summary: `Write ${outside}`, detail: outside },
+			{ summary: 'Read relative.txt', detail: 'relative.txt' },
+			{ summary: 'Run: npm test', detail: 'npm test' },
+			{ summary: 'Run: echo safe rm -rf ~', detail: 'echo safe\nrm -rf ~' },
+			100,
+			{ summary: 'Search for "TODO" in src' },
+			{ summary: 'Find files matching **/*.ts' },
+		]);
+	});
+
+	test('falls back to the tool name for unknown tools and missing input', () => {
+		assert.deepStrictEqual([
+			describeToolUse('WebFetch', { url: 'https://example.com' }, root),
+			describeToolUse('Edit', {}, root),
+			describeToolUse('Bash', { command: 42 }, root),
+		], [
+			{ summary: 'WebFetch' },
+			{ summary: 'Edit' },
+			{ summary: 'Bash' },
+		]);
 	});
 });

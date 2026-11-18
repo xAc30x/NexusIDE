@@ -20,6 +20,14 @@ export const DEFAULT_MAX_CHUNKS_PER_STREAM = 10_000;
  */
 export const DEFAULT_MAX_ENDED_STREAMS = 50;
 
+/**
+ * A chunk other than `end`, before the hub assigns its cursor.
+ */
+export type AIStreamEvent = WithoutCursor<Exclude<AIStreamChunk, { readonly kind: 'end' }>>;
+
+/** Removes `cursor` from each member of a union separately. */
+type WithoutCursor<T> = T extends unknown ? Omit<T, 'cursor'> : never;
+
 export interface IStreamHubOptions {
 	readonly maxChunksPerStream: number;
 	readonly maxEndedStreams: number;
@@ -82,6 +90,17 @@ export class StreamHub extends Disposable {
 			return { ok: false, error: 'Text must not be empty.' };
 		}
 		return this.append(streamId, cursor => ({ kind: 'text', cursor, text }));
+	}
+
+	/**
+	 * Appends a chunk of any kind except `end`, which only {@link end} writes.
+	 * The value is the cursor of the new chunk.
+	 */
+	appendEvent(streamId: string, event: AIStreamEvent): AIResult<number> {
+		if (event.kind === 'text') {
+			return this.appendText(streamId, event.text);
+		}
+		return this.append(streamId, cursor => ({ ...event, cursor }));
 	}
 
 	/**

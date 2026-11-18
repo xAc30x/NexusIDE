@@ -302,6 +302,44 @@ suite('NexusChatModel', () => {
 		});
 	});
 
+	test('keeps text, tool use and permission requests in order and sends answers', async () => {
+		const service = createService();
+		const model = createModel(service);
+		await model.send('fix it', { mode: 'agent', providerId: 'test' });
+		const streamId = service.streamIds[0];
+
+		service.hub.appendText(streamId, 'Looking');
+		service.hub.appendText(streamId, '...');
+		service.hub.appendEvent(streamId, { kind: 'tool', summary: 'Read a.ts', failed: false });
+		service.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r1', toolName: 'Edit', summary: 'Edit a.ts', detail: '/w/a.ts' });
+		service.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r2', toolName: 'Bash', summary: 'Run: rm x' });
+
+		assert.deepStrictEqual(await model.respondToPermission('r1', 'allow'), { ok: true, value: true });
+		assert.deepStrictEqual(await model.respondToPermission('unknown', 'allow'), { ok: true, value: false });
+		assert.deepStrictEqual(service.permissionAnswers, [{ threadId: model.threadId, requestId: 'r1', decision: 'allow' }]);
+
+		service.hub.appendEvent(streamId, { kind: 'permissionResolved', requestId: 'r1', decision: 'allow' });
+		service.hub.appendEvent(streamId, { kind: 'tool', summary: 'Edit a.ts', failed: false });
+		service.hub.appendEvent(streamId, { kind: 'permissionResolved', requestId: 'r2', decision: 'deny' });
+		service.hub.appendText(streamId, 'Done.');
+		assert.deepStrictEqual(await model.respondToPermission('r2', 'allow'), { ok: true, value: false }, 'answered requests are not sent again');
+		service.hub.end(streamId, 'completed');
+
+		assert.deepStrictEqual(model.messages.map(({ text, parts }) => ({ text, parts })), [
+			{ text: 'fix it', parts: [{ kind: 'text', text: 'fix it' }] },
+			{
+				text: 'Looking...Done.', parts: [
+					{ kind: 'text', text: 'Looking...' },
+					{ kind: 'tool', summary: 'Read a.ts', failed: false },
+					{ kind: 'permission', requestId: 'r1', toolName: 'Edit', summary: 'Edit a.ts', detail: '/w/a.ts', state: 'allowed' },
+					{ kind: 'permission', requestId: 'r2', toolName: 'Bash', summary: 'Run: rm x', state: 'denied' },
+					{ kind: 'tool', summary: 'Edit a.ts', failed: false },
+					{ kind: 'text', text: 'Done.' },
+				]
+			},
+		]);
+	});
+
 	test('picks the preferred provider when it is available, otherwise the first available one', () => {
 		const info = (id: string, available: boolean): IAIProviderInfo => ({ id, displayName: id, kind: 'cli', available });
 		const providers = [info('claude-cli', false), info('echo', true), info('other', true)];

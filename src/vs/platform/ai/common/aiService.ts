@@ -3,15 +3,23 @@
  *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { DeferredPromise } from '../../../base/common/async.js';
 import { getErrorMessage, isCancellationError } from '../../../base/common/errors.js';
 import { Event } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { isAbsolute } from '../../../base/common/path.js';
+import { generateUuid } from '../../../base/common/uuid.js';
 import { ILogService } from '../../log/common/log.js';
-import { AI_EXECUTION_MODES, AIExecutionMode, AIResult, IAIMessageRequest, IAIProviderInfo, IAIRunHandle, IAIService, IAIStreamDelta, IAIStreamReadResult } from './ai.js';
-import { IAIProviderAdapter } from './aiProvider.js';
+import { AI_EXECUTION_MODES, AIExecutionMode, AIPermissionDecision, AIResult, AIStreamEndReason, IAIMessageRequest, IAIProviderInfo, IAIRunHandle, IAIService, IAIStreamDelta, IAIStreamReadResult } from './ai.js';
+import { IAIPermissionRequest, IAIProviderAdapter, IAIRunSink } from './aiProvider.js';
 import { IReplyRun, ReplyRunner } from './replyRunner.js';
-import { StreamHub } from './streamHub.js';
+import { AIStreamEvent, StreamHub } from './streamHub.js';
+
+/** Permission requests of one active run that wait for the user. */
+interface IOpenPermissions {
+	readonly streamId: string;
+	readonly pending: Map<string, DeferredPromise<AIPermissionDecision>>;
+}
 
 /**
  * Routes AI requests to provider adapters and exposes their replies as
@@ -28,6 +36,8 @@ export class AIService extends Disposable implements IAIService {
 	private readonly streamHub = this._register(new StreamHub());
 	private readonly replyRunner = this._register(new ReplyRunner());
 	private readonly providers: ReadonlyMap<string, IAIProviderAdapter>;
+	/** Open permission requests by thread id. Only threads with an active run have an entry. */
+	private readonly openPermissions = new Map<string, IOpenPermissions>();
 
 	readonly onDidStreamDelta: Event<IAIStreamDelta> = this.streamHub.onDidAppend;
 
@@ -96,20 +106,94 @@ export class AIService extends Disposable implements IAIService {
 		return { ok: true, value: this.replyRunner.cancel(threadId) };
 	}
 
+	async respondToPermission(threadId: string, requestId: string, decision: AIPermissionDecision): Promise<AIResult<boolean>> {
+		if (!isNonEmptyString(threadId)) {
+			return { ok: false, error: 'Thread id must be a non-empty string.' };
+		}
+		if (!isNonEmptyString(requestId)) {
+			return { ok: false, error: 'Request id must be a non-empty string.' };
+		}
+		if (decision !== 'allow' && decision !== 'deny') {
+			return { ok: false, error: `Unknown decision: ${String(decision)}. Expected allow or deny.` };
+		}
+		const open = this.openPermissions.get(threadId);
+		return { ok: true, value: open !== undefined && this.resolvePermission(open, requestId, decision) };
+	}
+
 	private async execute(provider: IAIProviderAdapter, request: IAIMessageRequest, run: IReplyRun, streamId: string): Promise<void> {
+		const open: IOpenPermissions = { streamId, pending: new Map() };
+		this.openPermissions.set(request.threadId, open);
+		// Cancelling denies open requests right away, so the provider can stop.
+		const cancelListener = run.token.onCancellationRequested(() => this.denyAll(open));
+		const sink: IAIRunSink = {
+			text: text => this.appendText(streamId, text),
+			toolUse: (summary, failed) => this.appendEvent(streamId, { kind: 'tool', summary, failed }),
+			requestPermission: permission => this.requestPermission(open, permission, run),
+		};
 		try {
-			await provider.run(request, text => this.appendText(streamId, text), run.token);
-			this.endStream(streamId, run.token.isCancellationRequested ? 'cancelled' : 'completed');
+			await provider.run(request, sink, run.token);
+			this.endRun(open, run.token.isCancellationRequested ? 'cancelled' : 'completed');
 		} catch (error) {
 			if (run.token.isCancellationRequested || isCancellationError(error)) {
-				this.endStream(streamId, 'cancelled');
+				this.endRun(open, 'cancelled');
 			} else {
 				const message = getErrorMessage(error) || 'Unknown error.';
 				this.logService.error(`[AI] Provider ${provider.id} failed for thread ${request.threadId}: ${message}`);
-				this.endStream(streamId, 'failed', message);
+				this.endRun(open, 'failed', message);
 			}
 		} finally {
+			cancelListener.dispose();
+			this.openPermissions.delete(request.threadId);
 			run.finish();
+		}
+	}
+
+	private requestPermission(open: IOpenPermissions, permission: IAIPermissionRequest, run: IReplyRun): Promise<AIPermissionDecision> {
+		if (run.token.isCancellationRequested || this.openPermissions.get(run.threadId) !== open) {
+			return Promise.resolve('deny');
+		}
+		const requestId = generateUuid();
+		const deferred = new DeferredPromise<AIPermissionDecision>();
+		open.pending.set(requestId, deferred);
+		this.appendEvent(open.streamId, {
+			kind: 'permission',
+			requestId,
+			toolName: permission.toolName,
+			summary: permission.summary,
+			...(permission.detail !== undefined ? { detail: permission.detail } : {}),
+		});
+		return deferred.p;
+	}
+
+	/** Answers one open request. Returns `false` if it was not open. */
+	private resolvePermission(open: IOpenPermissions, requestId: string, decision: AIPermissionDecision): boolean {
+		const deferred = open.pending.get(requestId);
+		if (!deferred) {
+			return false;
+		}
+		open.pending.delete(requestId);
+		// Written before the provider continues, so the chunk precedes any output caused by the answer.
+		this.appendEvent(open.streamId, { kind: 'permissionResolved', requestId, decision });
+		deferred.complete(decision);
+		return true;
+	}
+
+	/** Denies open requests, then writes the `end` chunk, so their answers are part of the stream. */
+	private endRun(open: IOpenPermissions, reason: AIStreamEndReason, error?: string): void {
+		this.denyAll(open);
+		this.endStream(open.streamId, reason, error);
+	}
+
+	private denyAll(open: IOpenPermissions): void {
+		for (const requestId of [...open.pending.keys()]) {
+			this.resolvePermission(open, requestId, 'deny');
+		}
+	}
+
+	private appendEvent(streamId: string, event: AIStreamEvent): void {
+		const result = this.streamHub.appendEvent(streamId, event);
+		if (!result.ok) {
+			this.logService.warn(`[AI] Dropped ${event.kind} chunk for stream ${streamId}: ${result.error}`);
 		}
 	}
 
@@ -123,7 +207,7 @@ export class AIService extends Disposable implements IAIService {
 		}
 	}
 
-	private endStream(streamId: string, reason: 'completed' | 'cancelled' | 'failed', error?: string): void {
+	private endStream(streamId: string, reason: AIStreamEndReason, error?: string): void {
 		const result = this.streamHub.end(streamId, reason, error);
 		if (!result.ok) {
 			this.logService.warn(`[AI] Could not end stream ${streamId}: ${result.error}`);
