@@ -181,3 +181,119 @@
 .nexus-chat-permission.denied .nexus-chat-permission-outcome {
 	color: var(--vscode-errorForeground);
 }
+
+/* Markdown replies */
+
+.nexus-chat-markdown {
+	white-space: normal;
+}
+
+.nexus-chat-markdown > .rendered-markdown > :first-child {
+	margin-top: 0;
+}
+
+.nexus-chat-markdown > .rendered-markdown > :last-child {
+	margin-bottom: 0;
+}
+
+.nexus-chat-markdown p,
+.nexus-chat-markdown ul,
+.nexus-chat-markdown ol,
+.nexus-chat-markdown table,
+.nexus-chat-markdown blockquote {
+	margin: 0 0 8px;
+}
+
+.nexus-chat-markdown ul,
+.nexus-chat-markdown ol {
+	padding-left: 20px;
+}
+
+.nexus-chat-markdown h1,
+.nexus-chat-markdown h2,
+.nexus-chat-markdown h3,
+.nexus-chat-markdown h4 {
+	margin: 12px 0 6px;
+	font-size: 1.05em;
+	font-weight: 600;
+}
+
+.nexus-chat-markdown h1 {
+	font-size: 1.2em;
+}
+
+.nexus-chat-markdown code {
+	font-family: var(--monaco-monospace-font);
+	font-size: 0.9em;
+	padding: 1px 3px;
+	border-radius: 3px;
+	background-color: var(--vscode-textCodeBlock-background);
+}
+
+.nexus-chat-markdown blockquote {
+	padding-left: 8px;
+	border-left: 3px solid var(--vscode-textBlockQuote-border);
+	color: var(--vscode-descriptionForeground);
+}
+
+.nexus-chat-markdown table {
+	border-collapse: collapse;
+}
+
+.nexus-chat-markdown th,
+.nexus-chat-markdown td {
+	padding: 2px 8px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.nexus-chat-markdown a {
+	color: var(--vscode-textLink-foreground);
+}
+
+/* Code block artifacts */
+
+.nexus-chat-codeblock {
+	margin: 0 0 8px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.nexus-chat-codeblock-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 4px 2px 8px;
+	background-color: var(--vscode-editorWidget-background);
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.nexus-chat-codeblock-language {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+}
+
+.nexus-chat-codeblock-actions {
+	display: flex;
+	gap: 2px;
+}
+
+.nexus-chat-codeblock-actions .monaco-button.nexus-chat-codeblock-action {
+	width: auto;
+	padding: 2px 4px;
+}
+
+.nexus-chat-codeblock-body {
+	padding: 6px 8px;
+	overflow-x: auto;
+	background-color: var(--vscode-textCodeBlock-background);
+}
+
+.nexus-chat-codeblock-body .monaco-tokenized-source {
+	white-space: pre;
+}

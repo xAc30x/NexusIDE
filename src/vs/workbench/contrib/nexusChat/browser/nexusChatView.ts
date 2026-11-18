@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/nexusChat.css';
-import { $, addDisposableListener, append, clearNode } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, getWindow, reset, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableMap, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -18,6 +18,7 @@ import { IContextMenuService } from '../../../../platform/contextview/browser/co
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -25,6 +26,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
 import { INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
+import { INexusChatCodeBlockHost, NexusChatCodeBlockRenderer } from './nexusChatCodeBlock.js';
 
 export const NEXUS_CHAT_VIEW_CONTAINER_ID = 'workbench.view.nexusChat';
 export const NEXUS_CHAT_VIEW_ID = 'workbench.view.nexusChat.chat';
@@ -43,7 +45,8 @@ const STICK_TO_BOTTOM_THRESHOLD = 24;
 interface IPartElements {
 	readonly root: HTMLElement;
 	part: NexusChatPart;
-	update(part: NexusChatPart, canAnswer: boolean): void;
+	/** `streaming` is true while the reply is still arriving. */
+	update(part: NexusChatPart, canAnswer: boolean, streaming: boolean): void;
 }
 
 /** The elements of one message. Disposing it removes them and their buttons. */
@@ -55,6 +58,8 @@ class MessageElements implements IDisposable {
 		readonly root: HTMLElement,
 		readonly body: HTMLElement,
 		readonly status: HTMLElement,
+		/** Assistant text is rendered as markdown, user text as plain text. */
+		readonly markdown: boolean,
 	) { }
 
 	dispose(): void {
@@ -65,7 +70,8 @@ class MessageElements implements IDisposable {
 
 /**
  * The NexusIDE chat panel: a message list, a prompt box, mode and provider
- * pickers and a Send/Stop button. Replies are shown as plain text.
+ * pickers and a Send/Stop button. Replies are rendered as markdown; their
+ * code blocks get Copy, Insert, Save and Open buttons.
  */
 export class NexusChatViewPane extends ViewPane {
 
@@ -86,6 +92,11 @@ export class NexusChatViewPane extends ViewPane {
 	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
+	private readonly codeBlockRenderer: NexusChatCodeBlockRenderer;
+	private readonly codeBlockHost: INexusChatCodeBlockHost = {
+		showNotice: message => this.showNotice(message),
+		canPreview: () => false,
+	};
 
 	constructor(
 		options: IViewPaneOptions,
@@ -100,8 +111,10 @@ export class NexusChatViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAIService private readonly aiService: IAIService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this.codeBlockRenderer = instantiationService.createInstance(NexusChatCodeBlockRenderer);
 		this.model = this._register(instantiationService.createInstance(NexusChatModel));
 		this._register(this.model.onDidChange(() => this.renderMessages()));
 		this._register(this.onDidChangeBodyVisibility(visible => {
@@ -337,14 +350,15 @@ export class NexusChatViewPane extends ViewPane {
 
 	private updateMessageElements(elements: MessageElements, message: INexusChatMessage): void {
 		// Parts are only appended or replaced, so the element at an index always shows the part at that index.
+		const streaming = message.state === 'streaming';
 		message.parts.forEach((part, index) => {
-			const canAnswer = message.state === 'streaming' && part.kind === 'permission' && part.state === 'pending' && !this.answering.has(part.requestId);
+			const canAnswer = streaming && part.kind === 'permission' && part.state === 'pending' && !this.answering.has(part.requestId);
 			const existing = elements.parts[index];
 			if (existing && existing.part.kind === part.kind) {
-				existing.update(part, canAnswer);
+				existing.update(part, canAnswer, streaming);
 			} else {
 				existing?.root.remove();
-				const created = this.createPartElements(elements, part, canAnswer);
+				const created = this.createPartElements(elements, part, canAnswer, streaming);
 				if (existing) {
 					elements.body.insertBefore(created.root, elements.body.children[index] ?? null);
 				}
@@ -357,16 +371,65 @@ export class NexusChatViewPane extends ViewPane {
 		elements.root.classList.toggle('failed', message.state === 'failed');
 	}
 
-	private createPartElements(message: MessageElements, part: NexusChatPart, canAnswer: boolean): IPartElements {
+	private createPartElements(message: MessageElements, part: NexusChatPart, canAnswer: boolean, streaming: boolean): IPartElements {
 		switch (part.kind) {
 			case 'text':
-				return createTextPart(message.body, part);
+				return message.markdown ? this.createMarkdownPart(message, part, streaming) : createTextPart(message.body, part);
 			case 'tool':
 				return createToolPart(message.body, part);
 			case 'permission':
 				// A card always shows the same request: its part is only replaced to change the state.
 				return createPermissionPart(message.body, part, canAnswer, message.disposables, decision => this.answerPermission(part.requestId, decision));
 		}
+	}
+
+	/**
+	 * Renders a text part as markdown. Model output is untrusted: HTML in it is
+	 * shown as text, command links do not run and remote images are not loaded,
+	 * so a reply cannot send data to a server just by being shown. While the
+	 * reply streams, the markdown is rendered at most once per animation frame.
+	 */
+	private createMarkdownPart(message: MessageElements, initial: NexusChatPart & { readonly kind: 'text' }, streaming: boolean): IPartElements {
+		const root = append(message.body, $('.nexus-chat-message-text.nexus-chat-markdown'));
+		// Holds the current rendering and the buttons of its code blocks.
+		const rendering = message.disposables.add(new MutableDisposable<DisposableStore>());
+		const nextFrame = message.disposables.add(new MutableDisposable());
+		let renderedText: string | undefined;
+
+		const render = (text: string) => {
+			const store = new DisposableStore();
+			rendering.value = store;
+			const rendered = store.add(this.markdownRendererService.render({ value: text, isTrusted: false, supportHtml: false }, {
+				codeBlockRenderer: (languageAlias, code) => this.codeBlockRenderer.render(languageAlias, code, store, this.codeBlockHost),
+				sanitizerConfig: { replaceWithPlaintext: true, remoteImageIsAllowed: () => false },
+			}));
+			reset(root, rendered.element);
+			renderedText = text;
+		};
+
+		const elements: IPartElements = {
+			root,
+			part: initial,
+			update(part, _canAnswer, isStreaming) {
+				elements.part = part;
+				if (part.kind !== 'text' || part.text === renderedText) {
+					return;
+				}
+				if (!isStreaming) {
+					nextFrame.clear();
+					render(part.text);
+				} else if (!nextFrame.value) {
+					render(part.text);
+					// Text that arrives before the next frame is rendered then, in one go.
+					nextFrame.value = scheduleAtNextAnimationFrame(getWindow(root), () => {
+						nextFrame.clear();
+						elements.update(elements.part, false, true);
+					});
+				}
+			},
+		};
+		elements.update(initial, false, streaming);
+		return elements;
 	}
 
 	private updateSendButton(): void {
@@ -394,10 +457,10 @@ function createMessageElements(list: HTMLElement, message: INexusChatMessage): M
 		: localize('nexusChat.assistant', "AI");
 	const body = append(root, $('.nexus-chat-message-body'));
 	const status = append(root, $('.nexus-chat-message-status'));
-	return new MessageElements(root, body, status);
+	return new MessageElements(root, body, status, message.role === 'assistant');
 }
 
-// Every part is rendered with textContent: model and tool output is never interpreted as HTML.
+// These parts are rendered with textContent: model and tool output is never interpreted as HTML.
 
 function createTextPart(container: HTMLElement, initial: NexusChatPart & { readonly kind: 'text' }): IPartElements {
 	const root = append(container, $('.nexus-chat-message-text'));
@@ -411,7 +474,7 @@ function createTextPart(container: HTMLElement, initial: NexusChatPart & { reado
 			elements.part = part;
 		},
 	};
-	elements.update(initial, false);
+	elements.update(initial, false, false);
 	return elements;
 }
 
@@ -433,7 +496,7 @@ function createToolPart(container: HTMLElement, initial: NexusChatPart & { reado
 			elements.part = part;
 		},
 	};
-	elements.update(initial, false);
+	elements.update(initial, false, false);
 	return elements;
 }
 
@@ -479,7 +542,7 @@ function createPermissionPart(container: HTMLElement, initial: NexusChatPart & {
 			root.classList.toggle('denied', part.state === 'denied');
 		},
 	};
-	elements.update(initial, canAnswer);
+	elements.update(initial, canAnswer, false);
 	return elements;
 }
 

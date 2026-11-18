@@ -5,6 +5,15 @@
 
 import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { ModesRegistry } from '../../../../../editor/common/languages/modesRegistry.js';
+import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { TestClipboardService } from '../../../../../platform/clipboard/test/common/testClipboardService.js';
+import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { Event } from '../../../../../base/common/event.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -12,6 +21,7 @@ import { IAIProviderInfo, IAIService } from '../../../../../platform/ai/common/a
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { IViewContainerModel, IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../common/views.js';
+import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { TestViewsService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { NexusChatViewPane } from '../../browser/nexusChatView.js';
@@ -66,9 +76,34 @@ suite('NexusChatViewPane', () => {
 		instantiationService.stub(IViewDescriptorService, new TestViewDescriptorService());
 		instantiationService.stub(IViewsService, new TestViewsService());
 		instantiationService.stub(IAIService, aiService);
+		// Code blocks are highlighted with the editor font.
+		instantiationService.stub(IConfigurationService, new TestConfigurationService({ editor: { fontFamily: 'monospace' } }));
 		if (options.noFolder) {
 			instantiationService.stub(IWorkspaceContextService, 'getWorkspace', () => testWorkspace());
 		}
+
+		// Records what code block buttons do instead of touching real editors, files and the clipboard.
+		const clipboard = new TestClipboardService();
+		instantiationService.stub(IClipboardService, clipboard);
+		const artifacts = {
+			saveTarget: undefined as URI | undefined,
+			saveDialogDefaults: [] as (string | undefined)[],
+			writtenFiles: [] as { readonly path: string; readonly content: string }[],
+			openedEditors: [] as unknown[],
+			clipboard,
+		};
+		instantiationService.stub(IFileDialogService, 'showSaveDialog', async (dialogOptions: { defaultUri?: URI }) => {
+			artifacts.saveDialogDefaults.push(dialogOptions.defaultUri?.path);
+			return artifacts.saveTarget;
+		});
+		instantiationService.stub(IFileService, 'writeFile', async (resource: URI, content: VSBuffer) => {
+			artifacts.writtenFiles.push({ path: resource.path, content: content.toString() });
+			return undefined;
+		});
+		instantiationService.stub(IEditorService, 'openEditor', async (editor: unknown) => {
+			artifacts.openedEditors.push(editor);
+			return undefined;
+		});
 
 		const pane = store.add(instantiationService.createInstance(NexusChatViewPane, { id: 'nexusChatTest', title: 'NexusIDE Chat' }));
 		const container = document.createElement('div');
@@ -94,10 +129,10 @@ suite('NexusChatViewPane', () => {
 			status: message.querySelector<HTMLElement>('.nexus-chat-message-status')?.textContent,
 		}));
 
-		return { aiService, pane, query, input, pressEnter, messageTexts };
+		return { aiService, pane, query, input, pressEnter, messageTexts, artifacts };
 	}
 
-	test('sends with Enter, streams the reply as plain text and switches Send to Stop', async () => {
+	test('sends with Enter, streams the reply as markdown and switches Send to Stop', async () => {
 		const { aiService, query, input, pressEnter, messageTexts } = await createPane([provider('claude-cli', true), provider('echo', true)]);
 
 		assert.strictEqual(query<HTMLSelectElement>('.nexus-chat-provider').value, 'claude-cli');
@@ -232,6 +267,69 @@ suite('NexusChatViewPane', () => {
 		assert.strictEqual(aiService.requests.length, 0);
 		assert.strictEqual(query('.nexus-chat-notice').textContent, 'Agent mode needs a folder on disk. Open a folder, then try again.');
 		assert.strictEqual(input.value, 'clean up', 'the prompt is kept');
+	});
+
+	test('renders reply markdown with code blocks that have artifact buttons', async () => {
+		store.add(ModesRegistry.registerLanguage({ id: 'nexusTestLanguage', extensions: ['.ntl'], aliases: ['NexusTest', 'ntl'] }));
+		const { aiService, pane, query, input, pressEnter, artifacts } = await createPane([provider('claude-cli', true)]);
+		input.value = 'show me';
+		pressEnter();
+		await settle();
+
+		const streamId = aiService.streamIds[0];
+		aiService.hub.appendText(streamId, '# Result\n\n- one\n- `two`\n\nList<T> stays.\n\n![tracker](https://example.com/p.png?data=secret)\n\n```ntl\nlet x = 1;\n```\n');
+		aiService.hub.end(streamId, 'completed');
+		await settle();
+
+		const markdown = query('.nexus-chat-message.assistant .nexus-chat-markdown');
+		assert.deepStrictEqual({
+			heading: markdown.querySelector('h1')?.textContent,
+			items: [...markdown.querySelectorAll('li')].map(item => item.textContent),
+			inlineCode: markdown.querySelector('li code')?.textContent,
+			generic: [...markdown.querySelectorAll('p')].map(p => p.textContent).find(text => text?.includes('stays')),
+			remoteImages: [...markdown.querySelectorAll('img')].map(img => img.getAttribute('src')).filter(src => src?.startsWith('http')),
+			language: query('.nexus-chat-codeblock-language').textContent,
+			languageId: query<HTMLElement>('.nexus-chat-codeblock').dataset.languageId,
+			code: query('.nexus-chat-codeblock-body').textContent,
+			buttons: [...pane.element.querySelectorAll('.nexus-chat-codeblock-action')].map(button => button.getAttribute('aria-label')),
+		}, {
+			heading: 'Result',
+			items: ['one', 'two'],
+			inlineCode: 'two',
+			generic: 'List<T> stays.',
+			remoteImages: [],
+			language: 'ntl',
+			languageId: 'nexusTestLanguage',
+			code: 'let x = 1;',
+			buttons: ['Copy', 'Insert at Cursor', 'Save as File...', 'Open in Editor'],
+		});
+
+		const click = async (action: string) => {
+			query<HTMLElement>(`.nexus-chat-codeblock-action.${action}`).click();
+			await settle();
+		};
+		await click('copy');
+		await click('open');
+		await click('insert');
+		artifacts.saveTarget = URI.file('/work/saved.ntl');
+		await click('save');
+
+		assert.deepStrictEqual({
+			clipboard: await artifacts.clipboard.readText(),
+			saveDialogDefaults: artifacts.saveDialogDefaults,
+			writtenFiles: artifacts.writtenFiles,
+			openedEditors: artifacts.openedEditors,
+			notice: query('.nexus-chat-notice').textContent,
+		}, {
+			clipboard: 'let x = 1;',
+			saveDialogDefaults: [URI.file('/testWorkspace/untitled.ntl').path],
+			writtenFiles: [{ path: URI.file('/work/saved.ntl').path, content: 'let x = 1;' }],
+			openedEditors: [
+				{ resource: undefined, contents: 'let x = 1;', languageId: 'nexusTestLanguage', options: { pinned: true } },
+				{ resource: URI.file('/work/saved.ntl'), options: { pinned: true } },
+			],
+			notice: 'Open a file to insert the code into.',
+		});
 	});
 
 	test('New chat clears the messages', async () => {
