@@ -238,6 +238,7 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/platform/ai/**',
 	'!src/vs/workbench/services/ai/**',
 	'!src/vs/workbench/contrib/nexusChat/**',
+	'!src/vs/workbench/contrib/welcomeGettingStarted/test/common/gettingStartedContent.test.ts',
 ]);
 
 export const tsFormattingFilter = Object.freeze<string[]>([
