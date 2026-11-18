@@ -263,10 +263,30 @@ suite('ClaudeCliAdapter', function () {
 		]);
 	});
 
-	test('refuses debug mode', async () => {
-		assert.deepStrictEqual([...adapter.supportedModes], ['ask', 'plan', 'agent']);
-		assert.throws(() => buildClaudeCliArgs(request('p', { mode: 'debug' })));
-		await assert.rejects(collect('args', { mode: 'debug' }));
+	test('builds debug arguments: the agent approval flow plus debugging instructions', () => {
+		assert.deepStrictEqual([...adapter.supportedModes], ['ask', 'plan', 'agent', 'debug']);
+		const agent = buildClaudeCliArgs(request('secret prompt', { mode: 'agent' }));
+		const debug = buildClaudeCliArgs(request('secret prompt', { mode: 'debug' }));
+		assert.deepStrictEqual(debug.slice(0, agent.length), agent);
+		assert.deepStrictEqual(debug.slice(agent.length, agent.length + 1), ['--append-system-prompt']);
+		const instructions = debug[agent.length + 1];
+		assert.ok(instructions.includes('Root cause') && instructions.includes('<problems>'), instructions);
+		assert.strictEqual(debug.length, agent.length + 2);
+		assert.ok(!debug.some(arg => arg.includes('secret prompt')), 'the prompt is never an argument');
+	});
+
+	test('debug mode asks for approval before each tool, like agent mode', async () => {
+		const outputs: unknown[] = [];
+		for (const decision of ['deny', 'allow'] as const) {
+			const sink = new RecordingSink(undefined, async () => decision);
+			await adapter.run(request('write', { mode: 'debug', workingDirectory: testDir }), sink, CancellationToken.None);
+			outputs.push(sink.output);
+		}
+		assert.deepStrictEqual(outputs, [
+			[{ kind: 'permission', toolName: 'Write' }, { kind: 'tool', failed: true }, { kind: 'text', text: 'skipped: The user denied this action.' }],
+			[{ kind: 'permission', toolName: 'Write' }, { kind: 'tool', failed: false }, { kind: 'text', text: 'written' }],
+		]);
+		assert.strictEqual(await fs.readFile(join(testDir, 'hello.txt'), 'utf8'), 'hi');
 	});
 
 	test('agent mode runs an allowed tool and reports it', async () => {
@@ -297,8 +317,9 @@ suite('ClaudeCliAdapter', function () {
 		assert.deepStrictEqual(await collect('unknown-control', { mode: 'agent', workingDirectory: testDir }), ['error: Unsupported control request: mystery']);
 	});
 
-	test('agent mode refuses to run without a working directory', async () => {
-		await assert.rejects(collect('write', { mode: 'agent' }), /needs an open folder/);
+	test('agent and debug mode refuse to run without a working directory', async () => {
+		await assert.rejects(collect('write', { mode: 'agent' }), /Agent mode needs an open folder/);
+		await assert.rejects(collect('write', { mode: 'debug' }), /Fix mode needs an open folder/);
 	});
 
 	test('cancellation stops an agent run that waits for approval', async () => {
@@ -377,7 +398,6 @@ suite('ClaudeCliAdapter', function () {
 			{ kind: 'text', cursor: 1, text: 'world' },
 			{ kind: 'end', cursor: 2, reason: 'completed' },
 		]);
-		assert.strictEqual((await service.sendMessage(request('p', { mode: 'debug' }))).ok, false);
 	});
 
 	test('routes an agent approval end to end through AIService', async () => {

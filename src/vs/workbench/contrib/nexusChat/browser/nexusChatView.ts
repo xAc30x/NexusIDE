@@ -10,6 +10,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableMap, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { AIExecutionMode, AIPermissionDecision, IAIProviderInfo, IAIService } from '../../../../platform/ai/common/ai.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -19,24 +20,28 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
+import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
-import { INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
+import { INexusChatAttachment, INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
+import { formatProblems } from '../common/nexusChatProblems.js';
 import { INexusChatCodeBlockHost, NexusChatCodeBlockRenderer } from './nexusChatCodeBlock.js';
 import { getPreviewKind, NexusChatPreviews } from './nexusChatPreview.js';
 
 export const NEXUS_CHAT_VIEW_CONTAINER_ID = 'workbench.view.nexusChat';
 export const NEXUS_CHAT_VIEW_ID = 'workbench.view.nexusChat.chat';
 
-/** Modes the panel offers. Debug mode is not supported yet. */
+/** Modes the panel offers. */
 const PANEL_MODES: readonly { readonly mode: AIExecutionMode; readonly label: string }[] = [
 	{ mode: 'ask', label: localize('nexusChat.mode.ask', "Ask") },
 	{ mode: 'plan', label: localize('nexusChat.mode.plan', "Plan") },
 	{ mode: 'agent', label: localize('nexusChat.mode.agent', "Agent") },
+	// Shown as Fix so it is not confused with the debugger in the Run and Debug view.
+	{ mode: 'debug', label: localize('nexusChat.mode.fix', "Fix") },
 ];
 
 /** Distance from the bottom, in pixels, within which new text keeps the list scrolled to the end. */
@@ -118,6 +123,7 @@ export class NexusChatViewPane extends ViewPane {
 		@IAIService private readonly aiService: IAIService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
+		@IMarkerService private readonly markerService: IMarkerService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this.codeBlockRenderer = instantiationService.createInstance(NexusChatCodeBlockRenderer);
@@ -139,7 +145,7 @@ export class NexusChatViewPane extends ViewPane {
 		const messageList = this.messageList = append(root, $('.nexus-chat-messages', { role: 'log', 'aria-live': 'polite', tabIndex: 0 }));
 		messageList.setAttribute('aria-label', localize('nexusChat.messages', "Chat messages"));
 		this.emptyState = append(messageList, $('.nexus-chat-empty'));
-		this.emptyState.textContent = localize('nexusChat.empty', "Ask about the code in your open folder. In Ask and Plan mode the AI can only read files. In Agent mode it can also edit files and run commands, after you allow each one.");
+		this.emptyState.textContent = localize('nexusChat.empty', "Ask about the code in your open folder. In Ask and Plan mode the AI can only read files. In Agent mode it can also edit files and run commands, after you allow each one. Fix mode does the same to find and fix a bug, and sends the errors from the Problems panel with your message.");
 
 		const inputArea = append(root, $('.nexus-chat-input'));
 		const input = this.input = append(inputArea, $('textarea.nexus-chat-prompt')) as HTMLTextAreaElement;
@@ -219,14 +225,17 @@ export class NexusChatViewPane extends ViewPane {
 		}
 
 		const mode = this.selectedMode();
-		const workingDirectory = this.workingDirectory();
-		if (mode === 'agent' && workingDirectory === undefined) {
-			this.showNotice(localize('nexusChat.agentNeedsFolder', "Agent mode needs a folder on disk. Open a folder, then try again."));
+		const folder = this.workingFolder();
+		if ((mode === 'agent' || mode === 'debug') && folder === undefined) {
+			this.showNotice(mode === 'debug'
+				? localize('nexusChat.fixNeedsFolder', "Fix mode needs a folder on disk. Open a folder, then try again.")
+				: localize('nexusChat.agentNeedsFolder', "Agent mode needs a folder on disk. Open a folder, then try again."));
 			return;
 		}
 
 		const prompt = this.input.value;
-		const result = await this.model.send(prompt, { mode, providerId: provider.id, workingDirectory });
+		const attachment = mode === 'debug' && folder ? this.problemsAttachment(folder) : undefined;
+		const result = await this.model.send(prompt, { mode, providerId: provider.id, workingDirectory: folder?.fsPath, attachment });
 		if (!result.ok) {
 			this.showNotice(result.error);
 			return;
@@ -269,9 +278,21 @@ export class NexusChatViewPane extends ViewPane {
 	}
 
 	/** The first workspace folder on disk, which the provider uses as its working directory. */
-	private workingDirectory(): string | undefined {
+	private workingFolder(): URI | undefined {
 		const folder = this.workspaceContextService.getWorkspace().folders[0];
-		return folder?.uri.scheme === Schemas.file ? folder.uri.fsPath : undefined;
+		return folder?.uri.scheme === Schemas.file ? folder.uri : undefined;
+	}
+
+	/** The errors and warnings of the Problems panel inside `folder`, or `undefined` when there are none. */
+	private problemsAttachment(folder: URI): INexusChatAttachment | undefined {
+		const problems = formatProblems(this.markerService.read({ severities: MarkerSeverity.Error | MarkerSeverity.Warning }), folder);
+		if (!problems) {
+			return undefined;
+		}
+		const label = problems.included === 1
+			? localize('nexusChat.oneProblemIncluded', "Included 1 problem from the Problems panel.")
+			: localize('nexusChat.problemsIncluded', "Included {0} problems from the Problems panel.", problems.included);
+		return { label, text: problems.text };
 	}
 
 	private async refreshProviders(): Promise<void> {
@@ -570,6 +591,9 @@ function messageStatus(message: INexusChatMessage): string | undefined {
 	}
 	if (message.warning) {
 		parts.push(message.warning);
+	}
+	if (message.attachmentLabel) {
+		parts.push(message.attachmentLabel);
 	}
 	return parts.length > 0 ? parts.join(' ') : undefined;
 }
