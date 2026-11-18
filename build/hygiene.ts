@@ -79,6 +79,43 @@ export function checkNoNewJavaScriptFiles(repoRoot: string): string | undefined 
 	return undefined;
 }
 
+/** The only extension marketplace host that product.json may point to (NexusIDE uses Open VSX). */
+const ALLOWED_EXTENSIONS_GALLERY_HOST = 'open-vsx.org';
+
+/**
+ * Checks the `extensionsGallery` entry of product.json.
+ *
+ * Upstream Code - OSS rejects any `extensionsGallery`, so that the Microsoft
+ * marketplace is never configured in an open-source build. NexusIDE configures
+ * Open VSX instead, so the entry is allowed only when every value in it is an
+ * https URL on open-vsx.org. Any other marketplace is still rejected.
+ *
+ * Returns an error message, or undefined if the entry is missing or allowed.
+ */
+export function checkExtensionsGallery(gallery: unknown): string | undefined {
+	if (gallery === undefined) {
+		return undefined;
+	}
+	if (typeof gallery !== 'object' || gallery === null || Array.isArray(gallery)) {
+		return `'extensionsGallery' must be an object`;
+	}
+	for (const [key, value] of Object.entries(gallery)) {
+		if (typeof value !== 'string') {
+			return `'extensionsGallery.${key}' must be a URL string`;
+		}
+		let url: URL;
+		try {
+			url = new URL(value);
+		} catch {
+			return `'extensionsGallery.${key}' is not a valid URL: ${value}`;
+		}
+		if (url.protocol !== 'https:' || url.hostname !== ALLOWED_EXTENSIONS_GALLERY_HOST || url.port || url.username || url.password) {
+			return `'extensionsGallery.${key}' must point to https://${ALLOWED_EXTENSIONS_GALLERY_HOST}/, but found ${value}`;
+		}
+	}
+	return undefined;
+}
+
 /**
  * Main hygiene function that runs checks on files
  */
@@ -92,8 +129,9 @@ export function hygiene(some: NodeJS.ReadWriteStream | string[] | undefined, run
 	const productJson = es.through(function (file: VinylFile) {
 		const product = JSON.parse(file.contents!.toString('utf8'));
 
-		if (product.extensionsGallery) {
-			console.error(`product.json: Contains 'extensionsGallery'`);
+		const galleryError = checkExtensionsGallery(product.extensionsGallery);
+		if (galleryError) {
+			console.error(`product.json: ${galleryError}`);
 			errorCount++;
 		}
 
