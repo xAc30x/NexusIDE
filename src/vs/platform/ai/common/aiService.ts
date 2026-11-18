@@ -6,6 +6,7 @@
 import { getErrorMessage, isCancellationError } from '../../../base/common/errors.js';
 import { Event } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
+import { isAbsolute } from '../../../base/common/path.js';
 import { ILogService } from '../../log/common/log.js';
 import { AI_EXECUTION_MODES, AIExecutionMode, AIResult, IAIMessageRequest, IAIProviderInfo, IAIRunHandle, IAIService, IAIStreamDelta, IAIStreamReadResult } from './ai.js';
 import { IAIProviderAdapter } from './aiProvider.js';
@@ -59,6 +60,9 @@ export class AIService extends Disposable implements IAIService {
 		const provider = this.providers.get(request.providerId);
 		if (!provider) {
 			return { ok: false, error: `Unknown provider: ${request.providerId}.` };
+		}
+		if (provider.supportedModes && !provider.supportedModes.includes(request.mode)) {
+			return { ok: false, error: `Provider ${provider.displayName} does not support ${request.mode} mode yet. Supported: ${provider.supportedModes.join(', ')}.` };
 		}
 		if (!await this.isProviderAvailable(provider)) {
 			return { ok: false, error: `Provider ${provider.displayName} is not available.` };
@@ -177,6 +181,9 @@ function validateRequest(request: IAIMessageRequest): string | undefined {
 	}
 	if (request.model !== undefined && !isNonEmptyString(request.model)) {
 		return 'Model must be a non-empty string when given.';
+	}
+	if (request.workingDirectory !== undefined && (!isNonEmptyString(request.workingDirectory) || !isAbsolute(request.workingDirectory))) {
+		return 'Working directory must be an absolute path when given.';
 	}
 	return undefined;
 }

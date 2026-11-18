@@ -55,6 +55,11 @@ export interface IAIMessageRequest {
 	readonly prompt: string;
 	/** Provider-specific model name. The provider default is used when omitted. */
 	readonly model?: string;
+	/**
+	 * Absolute file system path of the folder the provider works in, usually
+	 * the workspace folder. Providers decide their own default when omitted.
+	 */
+	readonly workingDirectory?: string;
 }
 
 /**

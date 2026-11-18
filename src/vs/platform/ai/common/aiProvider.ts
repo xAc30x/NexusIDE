@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../base/common/cancellation.js';
-import { AIProviderKind, IAIMessageRequest } from './ai.js';
+import { AIExecutionMode, AIProviderKind, IAIMessageRequest } from './ai.js';
 
 /**
  * A backend that {@link IAIService} can route requests to, for example the
@@ -14,6 +14,11 @@ export interface IAIProviderAdapter {
 	readonly id: string;
 	readonly displayName: string;
 	readonly kind: AIProviderKind;
+	/**
+	 * Modes this provider accepts. Requests in other modes are refused before
+	 * a run starts. All modes are accepted when omitted.
+	 */
+	readonly supportedModes?: readonly AIExecutionMode[];
 
 	/**
 	 * Whether the provider can accept requests right now, for example because

@@ -11,8 +11,9 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ChannelClient, ChannelServer, IMessagePassingProtocol, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import { NullLogService } from '../../../log/common/log.js';
-import { AIResult, AIStreamChunk, IAIMessageRequest, IAIService, IAIStreamDelta } from '../../common/ai.js';
+import { AIExecutionMode, AIResult, AIStreamChunk, IAIMessageRequest, IAIService, IAIStreamDelta } from '../../common/ai.js';
 import { IAIProviderAdapter } from '../../common/aiProvider.js';
 import { AIService } from '../../common/aiService.js';
 import { EchoProvider } from '../../common/echoProvider.js';
@@ -38,6 +39,7 @@ class ManualProvider implements IAIProviderAdapter {
 	readonly displayName = 'Manual';
 	readonly kind = 'http' as const;
 
+	supportedModes: readonly AIExecutionMode[] | undefined;
 	available: boolean | Error = true;
 	runCount = 0;
 	lastToken: CancellationToken | undefined;
@@ -217,6 +219,8 @@ suite('AIService', () => {
 			request({ prompt: '' }),
 			request({ prompt: '   ' }),
 			request({ model: '' }),
+			request({ workingDirectory: '' }),
+			request({ workingDirectory: 'relative/folder' }),
 			{ ...request(), threadId: 42 },
 		];
 
@@ -225,6 +229,28 @@ suite('AIService', () => {
 			assert.strictEqual(result.ok, false, `expected rejection for ${JSON.stringify(value)}`);
 		}
 		assert.strictEqual(provider.runCount, 0);
+	});
+
+	test('rejects modes the provider does not support', async () => {
+		const provider = new ManualProvider();
+		provider.supportedModes = ['ask'];
+		const service = createService(provider);
+
+		assert.strictEqual((await service.sendMessage(request({ mode: 'agent' }))).ok, false);
+		assert.strictEqual(provider.runCount, 0);
+
+		unwrap(await service.sendMessage(request({ mode: 'ask' })));
+		provider.complete();
+		await settle();
+	});
+
+	test('accepts an absolute working directory', async () => {
+		const provider = new ManualProvider();
+		const service = createService(provider);
+
+		unwrap(await service.sendMessage(request({ workingDirectory: isWindows ? 'C:\\projects\\app' : '/home/user/project' })));
+		provider.complete();
+		await settle();
 	});
 
 	test('rejects requests for an unavailable provider', async () => {

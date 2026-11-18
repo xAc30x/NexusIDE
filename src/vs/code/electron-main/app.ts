@@ -40,6 +40,7 @@ import { EncryptionMainService } from '../../platform/encryption/electron-main/e
 import { AI_CHANNEL_NAME, IAIService } from '../../platform/ai/common/ai.js';
 import { AIService } from '../../platform/ai/common/aiService.js';
 import { EchoProvider } from '../../platform/ai/common/echoProvider.js';
+import { ClaudeCliAdapter } from '../../platform/ai/node/claudeCliAdapter.js';
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
@@ -1273,7 +1274,8 @@ export class CodeApplication extends Disposable {
 		services.set(IEncryptionMainService, new SyncDescriptor(EncryptionMainService));
 
 		// NexusIDE AI (the echo provider is only offered when running from source)
-		services.set(IAIService, new SyncDescriptor(AIService, [this.environmentMainService.isBuilt ? [] : [new EchoProvider()]]));
+		const aiProviders = [new ClaudeCliAdapter(), ...(this.environmentMainService.isBuilt ? [] : [new EchoProvider()])];
+		services.set(IAIService, new SyncDescriptor(AIService, [aiProviders]));
 
 		// Browser View
 		services.set(IBrowserViewMainService, new SyncDescriptor(BrowserViewMainService, undefined, false /* proxied to other processes */));
