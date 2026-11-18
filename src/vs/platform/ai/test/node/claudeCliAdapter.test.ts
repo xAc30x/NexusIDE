@@ -15,7 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { NullLogService } from '../../../log/common/log.js';
 import { AIResult, IAIMessageRequest } from '../../common/ai.js';
 import { AIService } from '../../common/aiService.js';
-import { buildClaudeCliArgs, CLAUDE_CLI_PROVIDER_ID, ClaudeCliAdapter } from '../../node/claudeCliAdapter.js';
+import { buildClaudeCliArgs, CLAUDE_CLI_PROVIDER_ID, ClaudeCliAdapter, IClaudeCliAdapterOptions } from '../../node/claudeCliAdapter.js';
 
 /**
  * Stand-in for the `claude` CLI. The prompt read from stdin selects what it
@@ -95,6 +95,15 @@ function unwrap<T>(result: AIResult<T>): T {
 	return result.value;
 }
 
+/**
+ * Options that run a script with the current executable. In the Electron test
+ * runner that executable is Electron, which only acts as Node when
+ * ELECTRON_RUN_AS_NODE is set.
+ */
+function nodeScript(script: string): IClaudeCliAdapterOptions {
+	return { command: process.execPath, commandArgs: [script], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+}
+
 suite('ClaudeCliAdapter', function () {
 
 	this.timeout(20_000);
@@ -108,7 +117,7 @@ suite('ClaudeCliAdapter', function () {
 		await fs.mkdir(testDir, { recursive: true });
 		const script = join(testDir, 'fake-claude.cjs');
 		await fs.writeFile(script, FAKE_CLAUDE_SCRIPT);
-		adapter = new ClaudeCliAdapter({ command: process.execPath, commandArgs: [script], killGraceMs: 200 });
+		adapter = new ClaudeCliAdapter({ ...nodeScript(script), killGraceMs: 200 });
 	});
 
 	teardown(async () => {
@@ -202,7 +211,7 @@ suite('ClaudeCliAdapter', function () {
 	test('is available when --version succeeds and unavailable otherwise', async () => {
 		assert.strictEqual(await adapter.isAvailable(), true);
 		assert.strictEqual(await new ClaudeCliAdapter({ command: join(testDir, 'no-such-claude') }).isAvailable(), false);
-		assert.strictEqual(await new ClaudeCliAdapter({ command: process.execPath, commandArgs: [join(testDir, 'missing-script.cjs')] }).isAvailable(), false);
+		assert.strictEqual(await new ClaudeCliAdapter(nodeScript(join(testDir, 'missing-script.cjs'))).isAvailable(), false);
 	});
 
 	test('works end to end through AIService', async () => {

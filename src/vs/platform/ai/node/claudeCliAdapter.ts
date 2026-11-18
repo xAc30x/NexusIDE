@@ -45,6 +45,8 @@ export interface IClaudeCliAdapterOptions {
 	readonly command?: string;
 	/** Arguments placed before the adapter's own arguments, for example a script path. */
 	readonly commandArgs?: readonly string[];
+	/** Environment for the CLI process. Defaults to the environment of this process. */
+	readonly env?: NodeJS.ProcessEnv;
 	readonly killGraceMs?: number;
 	readonly availabilityTimeoutMs?: number;
 }
@@ -99,12 +101,14 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 
 	private readonly command: string;
 	private readonly commandArgs: readonly string[];
+	private readonly env: NodeJS.ProcessEnv | undefined;
 	private readonly killGraceMs: number;
 	private readonly availabilityTimeoutMs: number;
 
 	constructor(options: IClaudeCliAdapterOptions = {}) {
 		this.command = options.command ?? 'claude';
 		this.commandArgs = options.commandArgs ?? [];
+		this.env = options.env;
 		this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 		this.availabilityTimeoutMs = options.availabilityTimeoutMs ?? DEFAULT_AVAILABILITY_TIMEOUT_MS;
 	}
@@ -120,7 +124,7 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 				}
 			};
 
-			const child = cp.spawn(this.command, [...this.commandArgs, '--version'], { stdio: 'ignore', shell: false, windowsHide: true });
+			const child = cp.spawn(this.command, [...this.commandArgs, '--version'], { env: this.env, stdio: 'ignore', shell: false, windowsHide: true });
 			const timer = setTimeout(() => {
 				child.kill('SIGKILL');
 				settle(false);
@@ -149,6 +153,7 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 
 			const child = cp.spawn(this.command, [...this.commandArgs, ...args], {
 				cwd: request.workingDirectory,
+				env: this.env,
 				stdio: ['pipe', 'pipe', 'pipe'],
 				shell: false,
 				windowsHide: true,

@@ -9,7 +9,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAIProviderInfo, IAIService } from '../../../../../platform/ai/common/ai.js';
-import { IViewContainerModel, IViewDescriptorService, ViewContainerLocation } from '../../../../common/views.js';
+import { IViewContainerModel, IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../common/views.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { TestViewsService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { NexusChatViewPane } from '../../browser/nexusChatView.js';
@@ -26,8 +26,10 @@ class TestViewDescriptorService extends mock<IViewDescriptorService>() {
 		return null;
 	}
 
-	override getViewContainerByViewId(): null {
-		return null;
+	override getViewContainerByViewId(): ViewContainer {
+		return new class extends mock<ViewContainer>() {
+			override readonly id = 'workbench.view.nexusChatTest';
+		};
 	}
 
 	override getViewContainerModel(): IViewContainerModel {
