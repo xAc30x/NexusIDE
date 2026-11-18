@@ -22,8 +22,11 @@ import { IWorkspaceContextService } from '../../../../../platform/workspace/comm
 import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { IViewContainerModel, IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../common/views.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
+import { WebviewInput } from '../../../webviewPanel/browser/webviewEditorInput.js';
+import { IWebviewWorkbenchService } from '../../../webviewPanel/browser/webviewWorkbenchService.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { TestViewsService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
+import { PREVIEW_CONTENT_SECURITY_POLICY } from '../../browser/nexusChatPreview.js';
 import { NexusChatViewPane } from '../../browser/nexusChatView.js';
 import { TestAIService } from '../common/testAIService.js';
 
@@ -90,8 +93,27 @@ suite('NexusChatViewPane', () => {
 			saveDialogDefaults: [] as (string | undefined)[],
 			writtenFiles: [] as { readonly path: string; readonly content: string }[],
 			openedEditors: [] as unknown[],
+			/** HTML of each opened preview, and how often an open preview was revealed again. */
+			previews: [] as string[],
+			previewReveals: 0,
 			clipboard,
 		};
+		instantiationService.stub(IWebviewWorkbenchService, new class extends mock<IWebviewWorkbenchService>() {
+			override openWebview() {
+				const webview = new class extends mock<WebviewInput['webview']>() {
+					override setHtml(html: string) { artifacts.previews.push(html); }
+				};
+				return new class extends mock<WebviewInput>() {
+					override get webview() { return webview; }
+					override get group() { return undefined; }
+					override readonly onWillDispose = Event.None;
+					override isDisposed() { return false; }
+				};
+			}
+			override revealWebview() {
+				artifacts.previewReveals++;
+			}
+		});
 		instantiationService.stub(IFileDialogService, 'showSaveDialog', async (dialogOptions: { defaultUri?: URI }) => {
 			artifacts.saveDialogDefaults.push(dialogOptions.defaultUri?.path);
 			return artifacts.saveTarget;
@@ -329,6 +351,31 @@ suite('NexusChatViewPane', () => {
 				{ resource: URI.file('/work/saved.ntl'), options: { pinned: true } },
 			],
 			notice: 'Open a file to insert the code into.',
+		});
+	});
+
+	test('HTML and SVG code blocks get a Preview that opens a sandboxed page', async () => {
+		const { aiService, pane, input, pressEnter, artifacts } = await createPane([provider('claude-cli', true)]);
+		input.value = 'make a page';
+		pressEnter();
+		await settle();
+
+		const streamId = aiService.streamIds[0];
+		aiService.hub.appendText(streamId, '```html\n<button>Hi</button>\n```\n\n```svg\n<svg></svg>\n```\n\n```text\nplain\n```\n');
+		aiService.hub.end(streamId, 'completed');
+		await settle();
+
+		const blocks = [...pane.element.querySelectorAll<HTMLElement>('.nexus-chat-codeblock')];
+		assert.deepStrictEqual(blocks.map(block => block.querySelector('.nexus-chat-codeblock-action.preview') !== null), [true, true, false]);
+
+		const preview = blocks[0].querySelector<HTMLElement>('.nexus-chat-codeblock-action.preview')!;
+		preview.click();
+		await settle();
+		preview.click();
+		await settle();
+		assert.deepStrictEqual({ previews: artifacts.previews, reveals: artifacts.previewReveals }, {
+			previews: [`<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CONTENT_SECURITY_POLICY}"><button>Hi</button>`],
+			reveals: 1,
 		});
 	});
 

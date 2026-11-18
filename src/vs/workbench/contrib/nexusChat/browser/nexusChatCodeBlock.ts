@@ -30,10 +30,11 @@ import { IEditorService } from '../../../services/editor/common/editorService.js
 export interface INexusChatCodeBlockHost {
 	/** Shows a message under the prompt box. */
 	showNotice(message: string): void;
-	/** Opens a live preview of `code`. Omitted when previews are not available. */
-	readonly preview?: (languageId: string, code: string) => void;
-	/** Whether a block in this language gets a Preview button. */
-	canPreview(languageId: string): boolean;
+	/**
+	 * Returns the action that opens a live preview of a code block, or
+	 * `undefined` when the block cannot be previewed.
+	 */
+	getPreviewAction(languageAlias: string | undefined, languageId: string, code: string): (() => void) | undefined;
 }
 
 /**
@@ -97,9 +98,9 @@ export class NexusChatCodeBlockRenderer {
 		addButton('open', Codicon.goToFile, localize('nexusChat.openCode', "Open in Editor"), async () => {
 			await this.editorService.openEditor({ resource: undefined, contents: code, languageId, options: { pinned: true } });
 		});
-		const preview = host.preview;
-		if (preview && host.canPreview(languageId)) {
-			addButton('preview', Codicon.openPreview, localize('nexusChat.previewCode', "Preview"), () => preview(languageId, code));
+		const preview = host.getPreviewAction(languageAlias, languageId, code);
+		if (preview) {
+			addButton('preview', Codicon.openPreview, localize('nexusChat.previewCode', "Preview"), preview);
 		}
 		return root;
 	}

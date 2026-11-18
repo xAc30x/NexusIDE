@@ -27,6 +27,7 @@ import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPan
 import { IViewDescriptorService } from '../../../common/views.js';
 import { INexusChatMessage, NexusChatModel, NexusChatPart, pickProvider } from '../common/nexusChatModel.js';
 import { INexusChatCodeBlockHost, NexusChatCodeBlockRenderer } from './nexusChatCodeBlock.js';
+import { getPreviewKind, NexusChatPreviews } from './nexusChatPreview.js';
 
 export const NEXUS_CHAT_VIEW_CONTAINER_ID = 'workbench.view.nexusChat';
 export const NEXUS_CHAT_VIEW_ID = 'workbench.view.nexusChat.chat';
@@ -71,7 +72,8 @@ class MessageElements implements IDisposable {
 /**
  * The NexusIDE chat panel: a message list, a prompt box, mode and provider
  * pickers and a Send/Stop button. Replies are rendered as markdown; their
- * code blocks get Copy, Insert, Save and Open buttons.
+ * code blocks get Copy, Insert, Save and Open buttons, and HTML and SVG
+ * blocks also get a live Preview.
  */
 export class NexusChatViewPane extends ViewPane {
 
@@ -93,9 +95,13 @@ export class NexusChatViewPane extends ViewPane {
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
 	private readonly codeBlockRenderer: NexusChatCodeBlockRenderer;
+	private readonly previews: NexusChatPreviews;
 	private readonly codeBlockHost: INexusChatCodeBlockHost = {
 		showNotice: message => this.showNotice(message),
-		canPreview: () => false,
+		getPreviewAction: (languageAlias, languageId, code) => {
+			const kind = getPreviewKind(languageAlias, languageId);
+			return kind ? () => this.previews.open(kind, code) : undefined;
+		},
 	};
 
 	constructor(
@@ -115,6 +121,7 @@ export class NexusChatViewPane extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this.codeBlockRenderer = instantiationService.createInstance(NexusChatCodeBlockRenderer);
+		this.previews = this._register(instantiationService.createInstance(NexusChatPreviews));
 		this.model = this._register(instantiationService.createInstance(NexusChatModel));
 		this._register(this.model.onDidChange(() => this.renderMessages()));
 		this._register(this.onDidChangeBodyVisibility(visible => {
