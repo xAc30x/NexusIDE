@@ -151,6 +151,26 @@ export default defineConfig(
 			]
 		},
 	},
+	// NexusIDE code uses its own copyright header
+	{
+		files: [
+			'src/vs/platform/ai/**/*.ts',
+			'src/vs/workbench/services/ai/**/*.ts',
+			'src/vs/workbench/contrib/nexusChat/**/*.ts',
+		],
+		rules: {
+			'header/header': [
+				2,
+				'block',
+				[
+					'---------------------------------------------------------------------------------------------',
+					' *  Copyright (c) NexusIDE contributors. All rights reserved.',
+					' *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.',
+					' *--------------------------------------------------------------------------------------------'
+				]
+			]
+		},
+	},
 	{
 		files: [
 			'src/vs/workbench/**/*.ts',

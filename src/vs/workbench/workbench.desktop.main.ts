@@ -59,6 +59,7 @@ import './services/extensionManagement/electron-browser/extensionManagementServi
 import './services/mcp/electron-browser/mcpGalleryManifestService.js';
 import './services/mcp/electron-browser/mcpWorkbenchManagementService.js';
 import './services/encryption/electron-browser/encryptionService.js';
+import './services/ai/electron-browser/aiService.js';
 import './services/imageResize/electron-browser/imageResizeService.js';
 import './services/localTranscription/electron-browser/localTranscriptionService.js';
 import './services/secrets/electron-browser/secretStorageService.js';
@@ -219,6 +220,9 @@ import './contrib/keybindingsExport/electron-browser/keybindingsExport.contribut
 
 // System-wide (OS global) Keybindings
 import './contrib/keybindings/electron-browser/systemWideKeybindings.contribution.js';
+
+// NexusIDE Chat (needs the AI service, which only runs in the desktop app)
+import './contrib/nexusChat/browser/nexusChat.contribution.js';
 
 //#endregion
 
