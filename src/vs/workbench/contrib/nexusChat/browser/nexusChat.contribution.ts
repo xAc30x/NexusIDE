@@ -15,6 +15,7 @@ import { ViewAction } from '../../../browser/parts/views/viewPane.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
 import { NEXUS_CHAT_VIEW_CONTAINER_ID, NEXUS_CHAT_VIEW_ID, NexusChatViewPane } from './nexusChatView.js';
+import '../common/nexusChatConfiguration.js';
 
 const nexusChatIcon = registerIcon('nexus-chat-view-icon', Codicon.commentDiscussion, localize('nexusChat.icon', "View icon of the NexusIDE chat view."));
 
