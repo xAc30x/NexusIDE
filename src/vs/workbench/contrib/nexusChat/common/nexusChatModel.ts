@@ -7,7 +7,7 @@ import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
-import { AIExecutionMode, AIResult, AIStreamChunk, IAIProviderInfo, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../platform/ai/common/ai.js';
+import { AIExecutionMode, AIPermissionDecision, AIResult, AIStreamChunk, IAIProviderInfo, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../platform/ai/common/ai.js';
 
 export type NexusChatRole = 'user' | 'assistant';
 
@@ -17,10 +17,26 @@ export type NexusChatRole = 'user' | 'assistant';
  */
 export type NexusChatMessageState = 'streaming' | 'completed' | 'cancelled' | 'failed';
 
+/**
+ * - `pending`: waiting for the user to allow or deny it.
+ * - `allowed`, `denied`: answered. Requests still open when a run ends are denied.
+ */
+export type NexusChatPermissionState = 'pending' | 'allowed' | 'denied';
+
+/**
+ * One piece of a message, in the order it arrived.
+ */
+export type NexusChatPart =
+	| { readonly kind: 'text'; readonly text: string }
+	| { readonly kind: 'tool'; readonly summary: string; readonly failed: boolean }
+	| { readonly kind: 'permission'; readonly requestId: string; readonly toolName: string; readonly summary: string; readonly detail?: string; readonly state: NexusChatPermissionState };
+
 export interface INexusChatMessage {
 	readonly id: string;
 	readonly role: NexusChatRole;
+	/** All text parts joined. */
 	readonly text: string;
+	readonly parts: readonly NexusChatPart[];
 	readonly state: NexusChatMessageState;
 	/** Why the reply failed. Set only when `state` is `failed`. */
 	readonly error?: string;
@@ -41,6 +57,8 @@ interface IMutableMessage {
 	readonly id: string;
 	readonly role: NexusChatRole;
 	text: string;
+	/** Parts are replaced, never changed in place, so a part object can be compared to see if it changed. */
+	readonly parts: NexusChatPart[];
 	state: NexusChatMessageState;
 	error?: string;
 	warning?: string;
@@ -110,8 +128,8 @@ export class NexusChatModel extends Disposable {
 			return { ok: false, error: 'Wait for the current reply to finish, or stop it.' };
 		}
 
-		this._messages.push({ id: generateUuid(), role: 'user', text: prompt, state: 'completed' });
-		const reply: IMutableMessage = { id: generateUuid(), role: 'assistant', text: '', state: 'streaming' };
+		this._messages.push({ id: generateUuid(), role: 'user', text: prompt, parts: [{ kind: 'text', text: prompt }], state: 'completed' });
+		const reply: IMutableMessage = { id: generateUuid(), role: 'assistant', text: '', parts: [], state: 'streaming' };
 		this._messages.push(reply);
 		const active: IActiveReply = { message: reply, streamId: undefined, nextCursor: 0, catchingUp: false, catchUpAgain: false };
 		this.active = active;
@@ -152,6 +170,23 @@ export class NexusChatModel extends Disposable {
 		}
 		try {
 			return await this.aiService.cancelRun(this._threadId);
+		} catch (error) {
+			return { ok: false, error: getErrorMessage(error) || 'The AI service could not be reached.' };
+		}
+	}
+
+	/**
+	 * Allows or denies a pending permission request of the running reply. The
+	 * part changes once the service reports the answer in the stream. The value
+	 * is `false` if the request is no longer pending.
+	 */
+	async respondToPermission(requestId: string, decision: AIPermissionDecision): Promise<AIResult<boolean>> {
+		const pending = this.active?.message.parts.some(part => part.kind === 'permission' && part.requestId === requestId && part.state === 'pending');
+		if (!pending) {
+			return { ok: true, value: false };
+		}
+		try {
+			return await this.aiService.respondToPermission(this._threadId, requestId, decision);
 		} catch (error) {
 			return { ok: false, error: getErrorMessage(error) || 'The AI service could not be reached.' };
 		}
@@ -212,12 +247,11 @@ export class NexusChatModel extends Disposable {
 			}
 			active.nextCursor++;
 			changed = true;
-			if (chunk.kind === 'text') {
-				active.message.text += chunk.text;
-			} else {
+			if (chunk.kind === 'end') {
 				this.finish(active, chunk.reason, chunk.error);
 				return false;
 			}
+			applyChunk(active.message, chunk);
 		}
 		if (changed) {
 			this._onDidChange.fire();
@@ -279,6 +313,44 @@ export class NexusChatModel extends Disposable {
 			this.active = undefined;
 		}
 		this._onDidChange.fire();
+	}
+}
+
+/** Adds a chunk other than `end` to the parts of `message`. */
+function applyChunk(message: IMutableMessage, chunk: Exclude<AIStreamChunk, { readonly kind: 'end' }>): void {
+	const parts = message.parts;
+	switch (chunk.kind) {
+		case 'text': {
+			message.text += chunk.text;
+			const last = parts.at(-1);
+			if (last?.kind === 'text') {
+				parts[parts.length - 1] = { kind: 'text', text: last.text + chunk.text };
+			} else {
+				parts.push({ kind: 'text', text: chunk.text });
+			}
+			break;
+		}
+		case 'tool':
+			parts.push({ kind: 'tool', summary: chunk.summary, failed: chunk.failed });
+			break;
+		case 'permission':
+			parts.push({
+				kind: 'permission',
+				requestId: chunk.requestId,
+				toolName: chunk.toolName,
+				summary: chunk.summary,
+				...(chunk.detail !== undefined ? { detail: chunk.detail } : {}),
+				state: 'pending',
+			});
+			break;
+		case 'permissionResolved': {
+			const index = parts.findIndex(part => part.kind === 'permission' && part.requestId === chunk.requestId);
+			const part = parts[index];
+			if (part?.kind === 'permission') {
+				parts[index] = { ...part, state: chunk.decision === 'allow' ? 'allowed' : 'denied' };
+			}
+			break;
+		}
 	}
 }
 

@@ -103,3 +103,81 @@
 	margin-top: 6px;
 	color: var(--vscode-errorForeground);
 }
+
+.nexus-chat-message-body > * + * {
+	margin-top: 6px;
+}
+
+.nexus-chat-tool {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+}
+
+.nexus-chat-tool.failed {
+	color: var(--vscode-errorForeground);
+}
+
+.nexus-chat-tool-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nexus-chat-permission {
+	padding: 8px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 4px;
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.nexus-chat-permission.pending {
+	border-color: var(--vscode-focusBorder);
+}
+
+.nexus-chat-permission-question {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.nexus-chat-permission-summary {
+	overflow-wrap: anywhere;
+}
+
+.nexus-chat-permission-detail {
+	margin: 6px 0 0;
+	padding: 6px;
+	max-height: 160px;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-family: var(--monaco-monospace-font);
+	font-size: 0.9em;
+	background-color: var(--vscode-textCodeBlock-background);
+	border-radius: 4px;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.nexus-chat-permission-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.nexus-chat-permission-actions .monaco-button {
+	width: auto;
+	padding: 2px 12px;
+}
+
+.nexus-chat-permission-outcome {
+	margin-top: 6px;
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+.nexus-chat-permission.denied .nexus-chat-permission-outcome {
+	color: var(--vscode-errorForeground);
+}

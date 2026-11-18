@@ -5,7 +5,7 @@
 
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { AIResult, IAIMessageRequest, IAIProviderInfo, IAIRunHandle, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../../platform/ai/common/ai.js';
+import { AIPermissionDecision, AIResult, IAIMessageRequest, IAIProviderInfo, IAIRunHandle, IAIService, IAIStreamDelta, IAIStreamReadResult } from '../../../../../platform/ai/common/ai.js';
 import { IStreamHubOptions, StreamHub } from '../../../../../platform/ai/common/streamHub.js';
 
 /**
@@ -33,6 +33,7 @@ export class TestAIService extends Disposable implements IAIService {
 	readonly requests: IAIMessageRequest[] = [];
 	readonly cancelledThreads: string[] = [];
 	readonly readCursors: number[] = [];
+	readonly permissionAnswers: { readonly threadId: string; readonly requestId: string; readonly decision: AIPermissionDecision }[] = [];
 	/** Ids of the streams created by `sendMessage`, in order. */
 	readonly streamIds: string[] = [];
 
@@ -82,4 +83,8 @@ export class TestAIService extends Disposable implements IAIService {
 		return { ok: true, value: true };
 	}
 
+	async respondToPermission(threadId: string, requestId: string, decision: AIPermissionDecision): Promise<AIResult<boolean>> {
+		this.permissionAnswers.push({ threadId, requestId, decision });
+		return { ok: true, value: true };
+	}
 }

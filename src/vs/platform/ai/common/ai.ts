@@ -82,7 +82,17 @@ export type AIStreamEndReason = 'completed' | 'cancelled' | 'failed';
  */
 export type AIStreamChunk =
 	| { readonly kind: 'text'; readonly cursor: number; readonly text: string }
+	/** A tool the provider used. `failed` is true when it failed or was denied. */
+	| { readonly kind: 'tool'; readonly cursor: number; readonly summary: string; readonly failed: boolean }
+	| { readonly kind: 'permission'; readonly cursor: number; readonly requestId: string; readonly toolName: string; readonly summary: string; readonly detail?: string }
+	| { readonly kind: 'permissionResolved'; readonly cursor: number; readonly requestId: string; readonly decision: AIPermissionDecision }
 	| { readonly kind: 'end'; readonly cursor: number; readonly reason: AIStreamEndReason; readonly error?: string };
+
+/**
+ * Answer to a `permission` chunk. Requests that are still open when a run ends
+ * or is cancelled are denied.
+ */
+export type AIPermissionDecision = 'allow' | 'deny';
 
 /**
  * Payload of {@link IAIService.onDidStreamDelta}: chunks appended to a stream
@@ -142,4 +152,11 @@ export interface IAIService {
 	 * cancelled and `false` if the thread had no active run.
 	 */
 	cancelRun(threadId: string): Promise<AIResult<boolean>>;
+
+	/**
+	 * Answers a `permission` chunk of the active run of a thread. The value is
+	 * `true` if the request was open and is now answered, and `false` if it was
+	 * already answered or its run has ended.
+	 */
+	respondToPermission(threadId: string, requestId: string, decision: AIPermissionDecision): Promise<AIResult<boolean>>;
 }

@@ -13,7 +13,8 @@ import { isCancellationError } from '../../../../base/common/errors.js';
 import { getRandomTestPath } from '../../../../base/test/node/testUtils.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
-import { AIResult, IAIMessageRequest } from '../../common/ai.js';
+import { AIPermissionDecision, AIResult, AIStreamChunk, IAIMessageRequest } from '../../common/ai.js';
+import { IAIPermissionRequest, IAIRunSink } from '../../common/aiProvider.js';
 import { AIService } from '../../common/aiService.js';
 import { buildClaudeCliArgs, CLAUDE_CLI_PROVIDER_ID, ClaudeCliAdapter, IClaudeCliAdapterOptions } from '../../node/claudeCliAdapter.js';
 
@@ -32,8 +33,65 @@ const delta = text => out({ type: 'stream_event', event: { type: 'content_block_
 const success = () => out({ type: 'result', subtype: 'success', is_error: false, result: '' });
 let input = '';
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', () => {
+if (args.includes('--input-format')) {
+	runAgent();
+} else {
+	process.stdin.on('data', chunk => input += chunk);
+	process.stdin.on('end', runPrint);
+}
+
+// Agent mode: stdin carries stream-json lines and stays open until the host
+// closes it after the result.
+function runAgent() {
+	let buffer = '';
+	let onResponse;
+	process.stdin.on('data', chunk => {
+		buffer += chunk;
+		const lines = buffer.split('\\n');
+		buffer = lines.pop();
+		for (const line of lines.filter(l => l.trim())) {
+			const message = JSON.parse(line);
+			if (message.type === 'user') {
+				startAgentScenario(message.message.content, response => onResponse = response);
+			} else if (message.type === 'control_response') {
+				onResponse(message.response);
+			}
+		}
+	});
+	process.stdin.on('end', () => process.exit(0));
+}
+
+function startAgentScenario(prompt, setOnResponse) {
+	switch (prompt) {
+		case 'write': {
+			const input = { file_path: 'hello.txt', content: 'hi' };
+			out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool-1', name: 'Write', input }] } });
+			setOnResponse(response => {
+				const allowed = response.response.behavior === 'allow';
+				if (allowed) {
+					require('fs').writeFileSync(response.response.updatedInput.file_path, response.response.updatedInput.content);
+				}
+				out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', is_error: !allowed }] } });
+				delta(allowed ? 'written' : 'skipped: ' + response.response.message);
+				success();
+			});
+			out({ type: 'control_request', request_id: 'req-1', request: { subtype: 'can_use_tool', tool_name: 'Write', input } });
+			return;
+		}
+		case 'unknown-control':
+			setOnResponse(response => {
+				delta(response.subtype + ': ' + response.error);
+				success();
+			});
+			out({ type: 'control_request', request_id: 'req-2', request: { subtype: 'mystery' } });
+			return;
+		default:
+			process.stderr.write('unknown agent scenario: ' + prompt);
+			process.exit(3);
+	}
+}
+
+function runPrint() {
 	if (input.startsWith('echo:')) {
 		delta(input.slice('echo:'.length));
 		success();
@@ -81,11 +139,49 @@ process.stdin.on('end', () => {
 			process.stderr.write('unknown scenario: ' + input);
 			process.exitCode = 3;
 	}
-});
+}
 `;
 
 function request(prompt: string, overrides: Partial<IAIMessageRequest> = {}): IAIMessageRequest {
 	return { threadId: 'thread-1', providerId: CLAUDE_CLI_PROVIDER_ID, mode: 'ask', prompt, ...overrides };
+}
+
+/** Output of a run as recorded by {@link RecordingSink}. */
+/** Tool summaries are left out: they are covered by the describeToolUse tests. */
+type Recorded =
+	| { readonly kind: 'text'; readonly text: string }
+	| { readonly kind: 'tool'; readonly failed: boolean }
+	| { readonly kind: 'permission'; readonly toolName: string };
+
+/**
+ * Records everything an adapter reports. Permission requests are answered by
+ * `decide`, which defaults to never answering.
+ */
+class RecordingSink implements IAIRunSink {
+	readonly output: Recorded[] = [];
+
+	constructor(
+		private readonly onText: (text: string) => void = () => { },
+		private readonly decide: (request: IAIPermissionRequest) => Promise<AIPermissionDecision> = () => new Promise(() => { }),
+	) { }
+
+	get texts(): string[] {
+		return this.output.flatMap(entry => entry.kind === 'text' ? [entry.text] : []);
+	}
+
+	text(text: string): void {
+		this.output.push({ kind: 'text', text });
+		this.onText(text);
+	}
+
+	toolUse(_summary: string, failed: boolean): void {
+		this.output.push({ kind: 'tool', failed });
+	}
+
+	requestPermission(request: IAIPermissionRequest): Promise<AIPermissionDecision> {
+		this.output.push({ kind: 'permission', toolName: request.toolName });
+		return this.decide(request);
+	}
 }
 
 function unwrap<T>(result: AIResult<T>): T {
@@ -125,9 +221,20 @@ suite('ClaudeCliAdapter', function () {
 	});
 
 	async function collect(prompt: string, overrides: Partial<IAIMessageRequest> = {}, token: CancellationToken = CancellationToken.None): Promise<string[]> {
-		const texts: string[] = [];
-		await adapter.run(request(prompt, overrides), text => texts.push(text), token);
-		return texts;
+		const sink = new RecordingSink();
+		await adapter.run(request(prompt, overrides), sink, token);
+		return sink.texts;
+	}
+
+	async function readUntil(service: AIService, streamId: string, until: (chunks: readonly AIStreamChunk[]) => boolean): Promise<readonly AIStreamChunk[]> {
+		for (let i = 0; i < 400; i++) {
+			const read = unwrap(await service.readStream(streamId, 0));
+			if (read.done || until(read.chunks)) {
+				return read.chunks;
+			}
+			await timeout(25);
+		}
+		assert.fail('Stream did not reach the expected state.');
 	}
 
 	test('builds read-only arguments for ask and plan mode', () => {
@@ -146,11 +253,61 @@ suite('ClaudeCliAdapter', function () {
 		assert.throws(() => buildClaudeCliArgs(request('p', { model: 'opus --tools Bash' })));
 	});
 
-	test('refuses agent and debug mode', async () => {
-		assert.deepStrictEqual([...adapter.supportedModes], ['ask', 'plan']);
-		assert.throws(() => buildClaudeCliArgs(request('p', { mode: 'agent' })));
+	test('builds agent arguments that send tool approvals to the host', () => {
+		assert.deepStrictEqual(buildClaudeCliArgs(request('p', { mode: 'agent' })).slice(6), [
+			'--input-format', 'stream-json',
+			'--permission-prompt-tool', 'stdio',
+			'--restricted',
+			'--tools', 'Read,Grep,Glob,Edit,Write,Bash',
+			'--allowedTools', 'Read,Grep,Glob',
+		]);
+	});
+
+	test('refuses debug mode', async () => {
+		assert.deepStrictEqual([...adapter.supportedModes], ['ask', 'plan', 'agent']);
 		assert.throws(() => buildClaudeCliArgs(request('p', { mode: 'debug' })));
-		await assert.rejects(collect('args', { mode: 'agent' }));
+		await assert.rejects(collect('args', { mode: 'debug' }));
+	});
+
+	test('agent mode runs an allowed tool and reports it', async () => {
+		const sink = new RecordingSink(undefined, async () => 'allow');
+		await adapter.run(request('write', { mode: 'agent', workingDirectory: testDir }), sink, CancellationToken.None);
+
+		assert.deepStrictEqual(sink.output, [
+			{ kind: 'permission', toolName: 'Write' },
+			{ kind: 'tool', failed: false },
+			{ kind: 'text', text: 'written' },
+		]);
+		assert.strictEqual(await fs.readFile(join(testDir, 'hello.txt'), 'utf8'), 'hi');
+	});
+
+	test('agent mode tells the CLI when the user denies a tool', async () => {
+		const sink = new RecordingSink(undefined, async () => 'deny');
+		await adapter.run(request('write', { mode: 'agent', workingDirectory: testDir }), sink, CancellationToken.None);
+
+		assert.deepStrictEqual(sink.output, [
+			{ kind: 'permission', toolName: 'Write' },
+			{ kind: 'tool', failed: true },
+			{ kind: 'text', text: 'skipped: The user denied this action.' },
+		]);
+		await assert.rejects(fs.access(join(testDir, 'hello.txt')));
+	});
+
+	test('agent mode answers unknown control requests with an error', async () => {
+		assert.deepStrictEqual(await collect('unknown-control', { mode: 'agent', workingDirectory: testDir }), ['error: Unsupported control request: mystery']);
+	});
+
+	test('agent mode refuses to run without a working directory', async () => {
+		await assert.rejects(collect('write', { mode: 'agent' }), /needs an open folder/);
+	});
+
+	test('cancellation stops an agent run that waits for approval', async () => {
+		const source = store.add(new CancellationTokenSource());
+		const sink = new RecordingSink(undefined, () => {
+			source.cancel();
+			return new Promise(() => { });
+		});
+		await assert.rejects(adapter.run(request('write', { mode: 'agent', workingDirectory: testDir }), sink, source.token), error => isCancellationError(error));
 	});
 
 	test('streams text from stream-json output, including lines split across chunks', async () => {
@@ -187,24 +344,21 @@ suite('ClaudeCliAdapter', function () {
 
 	test('reports a CLI that cannot be started', async () => {
 		const missing = new ClaudeCliAdapter({ command: join(testDir, 'no-such-claude') });
-		await assert.rejects(missing.run(request('success'), () => { }, CancellationToken.None), /Could not start the Claude CLI/);
+		await assert.rejects(missing.run(request('success'), new RecordingSink(), CancellationToken.None), /Could not start the Claude CLI/);
 	});
 
 	test('cancellation stops the process', async () => {
 		const source = store.add(new CancellationTokenSource());
-		const texts: string[] = [];
-		const run = adapter.run(request('hang'), text => {
-			texts.push(text);
-			source.cancel();
-		}, source.token);
+		const sink = new RecordingSink(() => source.cancel());
+		const run = adapter.run(request('hang'), sink, source.token);
 
 		await assert.rejects(run, error => isCancellationError(error));
-		assert.deepStrictEqual(texts, ['started']);
+		assert.deepStrictEqual(sink.texts, ['started']);
 	});
 
 	test('cancellation kills a process that ignores SIGTERM after the grace period', async () => {
 		const source = store.add(new CancellationTokenSource());
-		const run = adapter.run(request('ignore-term'), () => source.cancel(), source.token);
+		const run = adapter.run(request('ignore-term'), new RecordingSink(() => source.cancel()), source.token);
 		await assert.rejects(run, error => isCancellationError(error));
 	});
 
@@ -218,17 +372,26 @@ suite('ClaudeCliAdapter', function () {
 		const service = store.add(new AIService([adapter], new NullLogService()));
 		const { streamId } = unwrap(await service.sendMessage(request('success')));
 
-		let read = unwrap(await service.readStream(streamId, 0));
-		for (let i = 0; !read.done && i < 200; i++) {
-			await timeout(25);
-			read = unwrap(await service.readStream(streamId, 0));
-		}
-
-		assert.deepStrictEqual(read.chunks, [
+		assert.deepStrictEqual(await readUntil(service, streamId, () => false), [
 			{ kind: 'text', cursor: 0, text: 'Hello ' },
 			{ kind: 'text', cursor: 1, text: 'world' },
 			{ kind: 'end', cursor: 2, reason: 'completed' },
 		]);
-		assert.strictEqual((await service.sendMessage(request('p', { mode: 'agent' }))).ok, false);
+		assert.strictEqual((await service.sendMessage(request('p', { mode: 'debug' }))).ok, false);
+	});
+
+	test('routes an agent approval end to end through AIService', async () => {
+		const service = store.add(new AIService([adapter], new NullLogService()));
+		const { streamId } = unwrap(await service.sendMessage(request('write', { mode: 'agent', workingDirectory: testDir })));
+
+		const before = await readUntil(service, streamId, chunks => chunks.some(chunk => chunk.kind === 'permission'));
+		const permission = before.find(chunk => chunk.kind === 'permission');
+		assert.ok(permission?.kind === 'permission');
+		assert.deepStrictEqual(await service.respondToPermission('thread-1', permission.requestId, 'allow'), { ok: true, value: true });
+
+		const chunks = await readUntil(service, streamId, () => false);
+		assert.deepStrictEqual(chunks.map(chunk => chunk.kind), ['permission', 'permissionResolved', 'tool', 'text', 'end']);
+		assert.deepStrictEqual(chunks.at(-1), { kind: 'end', cursor: 4, reason: 'completed' });
+		assert.strictEqual(await fs.readFile(join(testDir, 'hello.txt'), 'utf8'), 'hi');
 	});
 });

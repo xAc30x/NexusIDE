@@ -9,6 +9,8 @@ import { Event } from '../../../../../base/common/event.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAIProviderInfo, IAIService } from '../../../../../platform/ai/common/ai.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { IViewContainerModel, IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../common/views.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { TestViewsService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
@@ -57,13 +59,16 @@ suite('NexusChatViewPane', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function createPane(providers: readonly IAIProviderInfo[]) {
+	async function createPane(providers: readonly IAIProviderInfo[], options: { readonly noFolder?: boolean } = {}) {
 		const aiService = store.add(new TestAIService());
 		aiService.providers = providers;
 		const instantiationService = workbenchInstantiationService(undefined, store);
 		instantiationService.stub(IViewDescriptorService, new TestViewDescriptorService());
 		instantiationService.stub(IViewsService, new TestViewsService());
 		instantiationService.stub(IAIService, aiService);
+		if (options.noFolder) {
+			instantiationService.stub(IWorkspaceContextService, 'getWorkspace', () => testWorkspace());
+		}
 
 		const pane = store.add(instantiationService.createInstance(NexusChatViewPane, { id: 'nexusChatTest', title: 'NexusIDE Chat' }));
 		const container = document.createElement('div');
@@ -84,7 +89,8 @@ suite('NexusChatViewPane', () => {
 		const pressEnter = (shiftKey = false) => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey, bubbles: true, cancelable: true }));
 		const messageTexts = () => [...pane.element.querySelectorAll('.nexus-chat-message')].map(message => ({
 			role: message.querySelector('.nexus-chat-message-role')?.textContent,
-			text: message.querySelector('.nexus-chat-message-text')?.textContent,
+			// A reply shows one element per text part, and none while it is empty.
+			text: [...message.querySelectorAll('.nexus-chat-message-text')].map(part => part.textContent).join(''),
 			status: message.querySelector<HTMLElement>('.nexus-chat-message-status')?.textContent,
 		}));
 
@@ -167,6 +173,65 @@ suite('NexusChatViewPane', () => {
 		assert.strictEqual(notice.style.display, 'block');
 		assert.ok(notice.textContent?.includes('Claude Code CLI'), notice.textContent ?? '');
 		assert.strictEqual(input.value, 'hi', 'the prompt is kept');
+	});
+
+	test('Agent mode shows tool activity and Allow/Deny cards that send the answer', async () => {
+		const { aiService, pane, query, input, pressEnter } = await createPane([provider('claude-cli', true)]);
+		const modeSelect = query<HTMLSelectElement>('.nexus-chat-select');
+		assert.deepStrictEqual([...modeSelect.options].map(option => option.value), ['ask', 'plan', 'agent']);
+		modeSelect.value = 'agent';
+		input.value = 'clean up';
+		pressEnter();
+		await settle();
+		assert.strictEqual(aiService.requests[0].mode, 'agent');
+
+		const streamId = aiService.streamIds[0];
+		aiService.hub.appendEvent(streamId, { kind: 'tool', summary: 'Read a.ts', failed: false });
+		aiService.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r1', toolName: 'Bash', summary: 'Run: rm -rf build', detail: 'rm -rf build\necho <b>x</b>' });
+		const cards = () => [...pane.element.querySelectorAll<HTMLElement>('.nexus-chat-permission')].map(card => ({
+			summary: card.querySelector('.nexus-chat-permission-summary')?.textContent,
+			detail: card.querySelector('.nexus-chat-permission-detail')?.textContent,
+			buttons: card.querySelector<HTMLElement>('.nexus-chat-permission-actions')?.style.display === 'none'
+				? 'hidden'
+				: [...card.querySelectorAll('.monaco-button')].map(button => `${button.textContent}${button.classList.contains('disabled') ? ' (disabled)' : ''}`).join(', '),
+			outcome: card.querySelector('.nexus-chat-permission-outcome')?.textContent,
+		}));
+
+		assert.strictEqual(query('.nexus-chat-tool-label').textContent, 'Read a.ts');
+		assert.deepStrictEqual(cards(), [{ summary: 'Run: rm -rf build', detail: 'rm -rf build\necho <b>x</b>', buttons: 'Allow, Deny', outcome: '' }]);
+		assert.strictEqual(query('.nexus-chat-permission-detail').querySelector('b'), null, 'the detail is never parsed as HTML');
+
+		query<HTMLElement>('.nexus-chat-deny').click();
+		await settle();
+		assert.deepStrictEqual(aiService.permissionAnswers.map(({ requestId, decision }) => ({ requestId, decision })), [{ requestId: 'r1', decision: 'deny' }]);
+
+		aiService.hub.appendEvent(streamId, { kind: 'permissionResolved', requestId: 'r1', decision: 'deny' });
+		aiService.hub.appendEvent(streamId, { kind: 'tool', summary: 'Run: rm -rf build', failed: true });
+		assert.deepStrictEqual(cards(), [{ summary: 'Run: rm -rf build', detail: 'rm -rf build\necho <b>x</b>', buttons: 'hidden', outcome: 'Denied.' }]);
+		assert.deepStrictEqual([...pane.element.querySelectorAll('.nexus-chat-tool-label')].map(label => label.textContent), ['Read a.ts', 'Run: rm -rf build (failed or denied)']);
+
+		aiService.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r2', toolName: 'Edit', summary: 'Edit a.ts' });
+		[...pane.element.querySelectorAll<HTMLElement>('.nexus-chat-allow')].at(-1)!.click();
+		await settle();
+		assert.deepStrictEqual(aiService.permissionAnswers.map(({ requestId, decision }) => ({ requestId, decision })).at(-1), { requestId: 'r2', decision: 'allow' });
+		aiService.hub.appendEvent(streamId, { kind: 'permissionResolved', requestId: 'r2', decision: 'allow' });
+		assert.strictEqual(cards()[1].outcome, 'Allowed.');
+
+		aiService.hub.appendEvent(streamId, { kind: 'permission', requestId: 'r3', toolName: 'Edit', summary: 'Edit b.ts' });
+		aiService.hub.end(streamId, 'cancelled');
+		assert.strictEqual(cards()[2].buttons, 'Allow (disabled), Deny (disabled)', 'requests of an ended reply cannot be answered');
+	});
+
+	test('Agent mode explains that it needs an open folder and sends nothing', async () => {
+		const { aiService, query, input, pressEnter } = await createPane([provider('claude-cli', true)], { noFolder: true });
+		query<HTMLSelectElement>('.nexus-chat-select').value = 'agent';
+		input.value = 'clean up';
+		pressEnter();
+		await settle();
+
+		assert.strictEqual(aiService.requests.length, 0);
+		assert.strictEqual(query('.nexus-chat-notice').textContent, 'Agent mode needs a folder on disk. Open a folder, then try again.');
+		assert.strictEqual(input.value, 'clean up', 'the prompt is kept');
 	});
 
 	test('New chat clears the messages', async () => {

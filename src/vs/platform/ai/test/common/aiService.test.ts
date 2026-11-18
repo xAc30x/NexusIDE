@@ -13,8 +13,8 @@ import { ChannelClient, ChannelServer, IMessagePassingProtocol, ProxyChannel } f
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { NullLogService } from '../../../log/common/log.js';
-import { AIExecutionMode, AIResult, AIStreamChunk, IAIMessageRequest, IAIService, IAIStreamDelta } from '../../common/ai.js';
-import { IAIProviderAdapter } from '../../common/aiProvider.js';
+import { AIExecutionMode, AIPermissionDecision, AIResult, AIStreamChunk, IAIMessageRequest, IAIService, IAIStreamDelta } from '../../common/ai.js';
+import { IAIProviderAdapter, IAIRunSink } from '../../common/aiProvider.js';
 import { AIService } from '../../common/aiService.js';
 import { EchoProvider } from '../../common/echoProvider.js';
 
@@ -43,7 +43,8 @@ class ManualProvider implements IAIProviderAdapter {
 	available: boolean | Error = true;
 	runCount = 0;
 	lastToken: CancellationToken | undefined;
-	private onText: ((text: string) => void) | undefined;
+	/** Sink of the most recent run. */
+	sink: IAIRunSink | undefined;
 	private pending: DeferredPromise<void>[] = [];
 
 	constructor(readonly id = 'manual') { }
@@ -55,9 +56,9 @@ class ManualProvider implements IAIProviderAdapter {
 		return this.available;
 	}
 
-	run(_request: IAIMessageRequest, onText: (text: string) => void, token: CancellationToken): Promise<void> {
+	run(_request: IAIMessageRequest, sink: IAIRunSink, token: CancellationToken): Promise<void> {
 		this.runCount++;
-		this.onText = onText;
+		this.sink = sink;
 		this.lastToken = token;
 		const deferred = new DeferredPromise<void>();
 		this.pending.push(deferred);
@@ -65,7 +66,7 @@ class ManualProvider implements IAIProviderAdapter {
 	}
 
 	emit(text: string): void {
-		this.onText?.(text);
+		this.sink?.text(text);
 	}
 
 	complete(): void {
@@ -269,6 +270,64 @@ suite('AIService', () => {
 		assert.strictEqual((await service.readStream('missing', 0)).ok, false);
 		assert.strictEqual((await service.readStream('missing', '0' as unknown as number)).ok, false);
 		assert.strictEqual((await service.cancelRun('')).ok, false);
+	});
+
+	test('streams tool use and routes permission answers to the provider', async () => {
+		const provider = new ManualProvider();
+		const service = createService(provider);
+		const { streamId } = unwrap(await service.sendMessage(request({ mode: 'agent' })));
+
+		provider.sink!.toolUse('Read a.ts', false);
+		const first = provider.sink!.requestPermission({ toolName: 'Edit', summary: 'Edit a.ts', detail: '/w/a.ts' });
+		const second = provider.sink!.requestPermission({ toolName: 'Bash', summary: 'Run: ls' });
+		const chunks = await readChunks(service, streamId);
+		const [firstId, secondId] = chunks.flatMap(chunk => chunk.kind === 'permission' ? [chunk.requestId] : []);
+
+		assert.deepStrictEqual(await service.respondToPermission('thread-1', firstId, 'allow'), { ok: true, value: true });
+		assert.deepStrictEqual(await service.respondToPermission('thread-1', firstId, 'deny'), { ok: true, value: false }, 'already answered');
+		assert.deepStrictEqual(await service.respondToPermission('other-thread', secondId, 'allow'), { ok: true, value: false }, 'wrong thread');
+		assert.deepStrictEqual(await service.respondToPermission('thread-1', secondId, 'deny'), { ok: true, value: true });
+		assert.deepStrictEqual([await first, await second], ['allow', 'deny']);
+
+		provider.complete();
+		await settle();
+		assert.deepStrictEqual(await readChunks(service, streamId), [
+			{ kind: 'tool', cursor: 0, summary: 'Read a.ts', failed: false },
+			{ kind: 'permission', cursor: 1, requestId: firstId, toolName: 'Edit', summary: 'Edit a.ts', detail: '/w/a.ts' },
+			{ kind: 'permission', cursor: 2, requestId: secondId, toolName: 'Bash', summary: 'Run: ls' },
+			{ kind: 'permissionResolved', cursor: 3, requestId: firstId, decision: 'allow' },
+			{ kind: 'permissionResolved', cursor: 4, requestId: secondId, decision: 'deny' },
+			{ kind: 'end', cursor: 5, reason: 'completed' },
+		]);
+	});
+
+	test('denies open permission requests when the run is cancelled or ends', async () => {
+		const provider = new ManualProvider();
+		const service = createService(provider);
+
+		const cancelled = unwrap(await service.sendMessage(request({ mode: 'agent' })));
+		const waiting = provider.sink!.requestPermission({ toolName: 'Edit', summary: 'Edit a.ts' });
+		unwrap(await service.cancelRun('thread-1'));
+		assert.strictEqual(await waiting, 'deny');
+		provider.complete();
+		await settle();
+		assert.deepStrictEqual((await readChunks(service, cancelled.streamId)).map(chunk => chunk.kind), ['permission', 'permissionResolved', 'end']);
+		assert.strictEqual(await provider.sink!.requestPermission({ toolName: 'Edit', summary: 'late' }), 'deny', 'requests after the run ended are denied');
+
+		const ended = unwrap(await service.sendMessage(request({ mode: 'agent' })));
+		const unanswered = provider.sink!.requestPermission({ toolName: 'Bash', summary: 'Run: ls' });
+		provider.complete();
+		assert.strictEqual(await unanswered, 'deny');
+		await settle();
+		assert.deepStrictEqual((await readChunks(service, ended.streamId)).map(chunk => chunk.kind), ['permission', 'permissionResolved', 'end']);
+	});
+
+	test('validates respondToPermission arguments', async () => {
+		const service = createService(new ManualProvider());
+		assert.strictEqual((await service.respondToPermission('', 'r', 'allow')).ok, false);
+		assert.strictEqual((await service.respondToPermission('t', '', 'allow')).ok, false);
+		assert.strictEqual((await service.respondToPermission('t', 'r', 'maybe' as AIPermissionDecision)).ok, false);
+		assert.deepStrictEqual(await service.respondToPermission('t', 'r', 'allow'), { ok: true, value: false });
 	});
 
 	test('rejects duplicate provider ids', () => {

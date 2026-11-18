@@ -8,8 +8,8 @@ import { promises as fs } from 'fs';
 import { CancellationToken } from '../../../base/common/cancellation.js';
 import { CancellationError } from '../../../base/common/errors.js';
 import { AIExecutionMode, IAIMessageRequest } from '../common/ai.js';
-import { IAIProviderAdapter } from '../common/aiProvider.js';
-import { ClaudeStreamParser, LineBuffer } from '../common/claudeStreamParser.js';
+import { IAIProviderAdapter, IAIRunSink } from '../common/aiProvider.js';
+import { ClaudeStreamEvent, ClaudeStreamParser, describeToolUse, LineBuffer } from '../common/claudeStreamParser.js';
 
 export const CLAUDE_CLI_PROVIDER_ID = 'claude-cli';
 
@@ -22,17 +22,20 @@ const DEFAULT_AVAILABILITY_TIMEOUT_MS = 5_000;
 /** Amount of stderr output kept for error messages. */
 const MAX_STDERR_LENGTH = 4_000;
 
-/**
- * Built-in Claude Code tools the CLI may use. Only read-only tools are allowed
- * until the workbench can ask the user to approve edits and commands.
- */
+/** Built-in Claude Code tools that only read. They never need approval. */
 const READ_ONLY_TOOLS = 'Read,Grep,Glob';
 
 /**
- * Modes the adapter accepts. Agent and Debug need file edits and command
- * execution, which stay disabled until an approval UI exists.
+ * Tools available in Agent mode. Tools outside {@link READ_ONLY_TOOLS} are
+ * approved one call at a time by the user.
  */
-const SUPPORTED_MODES: readonly AIExecutionMode[] = ['ask', 'plan'];
+const AGENT_TOOLS = 'Read,Grep,Glob,Edit,Write,Bash';
+
+/** Modes the adapter accepts. Debug mode is not supported yet. */
+const SUPPORTED_MODES: readonly AIExecutionMode[] = ['ask', 'plan', 'agent'];
+
+/** Message returned to the CLI when the user denies a tool call. */
+const DENIED_MESSAGE = 'The user denied this action.';
 
 /**
  * Accepted model names, for example `opus` or `claude-sonnet-4-5`. A name must
@@ -54,7 +57,8 @@ export interface IClaudeCliAdapterOptions {
 /**
  * Builds the CLI arguments for a request. The prompt is not part of the
  * arguments: it is written to stdin so its length and characters cannot
- * affect argument parsing.
+ * affect argument parsing. In Agent mode stdin also carries the answers to
+ * permission requests.
  */
 export function buildClaudeCliArgs(request: IAIMessageRequest): string[] {
 	const args = [
@@ -63,15 +67,28 @@ export function buildClaudeCliArgs(request: IAIMessageRequest): string[] {
 		'--include-partial-messages',
 		'--verbose',
 		'--no-session-persistence',
-		'--tools', READ_ONLY_TOOLS,
 	];
 	switch (request.mode) {
 		case 'ask':
 			// Deny every tool use that is not pre-approved instead of prompting.
-			args.push('--permission-mode', 'dontAsk');
+			args.push('--tools', READ_ONLY_TOOLS, '--permission-mode', 'dontAsk');
 			break;
 		case 'plan':
-			args.push('--permission-mode', 'plan');
+			args.push('--tools', READ_ONLY_TOOLS, '--permission-mode', 'plan');
+			break;
+		case 'agent':
+			// Tool calls that are not pre-approved are sent to us as control
+			// requests on stdout and answered on stdin, so the prompt is sent as a
+			// stream-json message. --restricted keeps file tools inside the working
+			// directory and ignores user and project settings, so no settings file
+			// can pre-approve tools behind the user's back.
+			args.push(
+				'--input-format', 'stream-json',
+				'--permission-prompt-tool', 'stdio',
+				'--restricted',
+				'--tools', AGENT_TOOLS,
+				'--allowedTools', READ_ONLY_TOOLS,
+			);
 			break;
 		default:
 			throw new Error(`Claude CLI does not support ${request.mode} mode yet.`);
@@ -134,8 +151,13 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 		});
 	}
 
-	async run(request: IAIMessageRequest, onText: (text: string) => void, token: CancellationToken): Promise<void> {
+	async run(request: IAIMessageRequest, sink: IAIRunSink, token: CancellationToken): Promise<void> {
 		const args = buildClaudeCliArgs(request);
+		if (request.mode === 'agent' && request.workingDirectory === undefined) {
+			// Without a folder the CLI would edit files and run commands in the
+			// folder NexusIDE itself was started from.
+			throw new Error('Agent mode needs an open folder to work in.');
+		}
 		if (request.workingDirectory !== undefined) {
 			await assertDirectory(request.workingDirectory);
 		}
@@ -150,6 +172,8 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 			let sawResult = false;
 			let stderr = '';
 			let killTimer: ReturnType<typeof setTimeout> | undefined;
+			const interactive = request.mode === 'agent';
+			let stdinOpen = true;
 
 			const child = cp.spawn(this.command, [...this.commandArgs, ...args], {
 				cwd: request.workingDirectory,
@@ -159,15 +183,54 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 				windowsHide: true,
 			});
 
+			const closeStdin = () => {
+				if (stdinOpen) {
+					stdinOpen = false;
+					child.stdin.end();
+				}
+			};
+
+			/** Writes one stream-json line to the CLI. Dropped once stdin is closed. */
+			const writeLine = (message: object) => {
+				if (stdinOpen) {
+					child.stdin.write(JSON.stringify(message) + '\n', 'utf8');
+				}
+			};
+
+			const handleEvent = (event: ClaudeStreamEvent) => {
+				switch (event.kind) {
+					case 'text':
+						sink.text(event.text);
+						break;
+					case 'toolResult':
+						sink.toolUse(describeToolUse(event.toolName, event.input, request.workingDirectory).summary, event.isError);
+						break;
+					case 'permission': {
+						const { summary, detail } = describeToolUse(event.toolName, event.input, request.workingDirectory);
+						void sink.requestPermission({ toolName: event.toolName, summary, ...(detail !== undefined ? { detail } : {}) }).then(decision => {
+							const response = decision === 'allow'
+								? { behavior: 'allow', updatedInput: event.input }
+								: { behavior: 'deny', message: DENIED_MESSAGE };
+							writeLine({ type: 'control_response', response: { subtype: 'success', request_id: event.requestId, response } });
+						});
+						break;
+					}
+					case 'unsupportedControl':
+						writeLine({ type: 'control_response', response: { subtype: 'error', request_id: event.requestId, error: `Unsupported control request: ${event.subtype}` } });
+						break;
+					case 'result':
+						sawResult = true;
+						resultError = event.isError ? event.errorMessage : undefined;
+						// The CLI waits for more input until stdin closes.
+						closeStdin();
+						break;
+				}
+			};
+
 			const handleLines = (completed: string[]) => {
 				for (const line of completed) {
 					for (const event of parser.parseLine(line)) {
-						if (event.kind === 'text') {
-							onText(event.text);
-						} else {
-							sawResult = true;
-							resultError = event.isError ? event.errorMessage : undefined;
-						}
+						handleEvent(event);
 					}
 				}
 			};
@@ -191,8 +254,13 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 				stderr = (stderr + chunk).slice(-MAX_STDERR_LENGTH);
 			});
 			// The process may exit before reading stdin; that is reported through 'close'.
-			child.stdin.on('error', () => { });
-			child.stdin.end(request.prompt, 'utf8');
+			child.stdin.on('error', () => { stdinOpen = false; });
+			if (interactive) {
+				writeLine({ type: 'user', message: { role: 'user', content: request.prompt } });
+			} else {
+				stdinOpen = false;
+				child.stdin.end(request.prompt, 'utf8');
+			}
 
 			child.once('error', error => {
 				cleanUp();
@@ -202,6 +270,7 @@ export class ClaudeCliAdapter implements IAIProviderAdapter {
 			child.once('close', (code, signal) => {
 				cleanUp();
 				handleLines(lines.flush());
+				stdinOpen = false;
 
 				if (token.isCancellationRequested) {
 					reject(new CancellationError());
