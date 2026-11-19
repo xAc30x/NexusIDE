@@ -273,10 +273,15 @@ class QuickPickSeparatorElement extends BaseQuickPickItemElement {
 }
 
 class QuickInputItemDelegate implements IListVirtualDelegate<IQuickPickElement> {
-	getHeight(element: IQuickPickElement): number {
+	itemHeight: number | undefined;
+	separatorHeight: number | undefined;
 
+	getHeight(element: IQuickPickElement): number {
 		if (element instanceof QuickPickSeparatorElement) {
-			return 30;
+			return this.separatorHeight ?? 30;
+		}
+		if (this.itemHeight !== undefined) {
+			return this.itemHeight;
 		}
 		return element.saneDetail ? 44 : 22;
 	}
@@ -769,6 +774,7 @@ export class QuickInputList extends Disposable {
 	// Element that had focus when the item hover was shown, see `hideHoverIfMoved`
 	private _hoverFocusReturn: HTMLElement | undefined;
 	private _lastQueryString: string | undefined;
+	private readonly _itemDelegate = new QuickInputItemDelegate();
 
 	constructor(
 		private parent: HTMLElement,
@@ -787,14 +793,14 @@ export class QuickInputList extends Disposable {
 			WorkbenchObjectTree<IQuickPickElement, void>,
 			'QuickInput',
 			this._container,
-			new QuickInputItemDelegate(),
+			this._itemDelegate,
 			[this._itemRenderer, this._separatorRenderer],
 			{
 				filter: {
 					filter(element) {
 						return element.hidden
 							? TreeVisibility.Hidden
-							: element instanceof QuickPickSeparatorElement
+							: element instanceof QuickPickSeparatorElement && element.children.length > 0
 								? TreeVisibility.Recurse
 								: TreeVisibility.Visible;
 					},
@@ -1125,6 +1131,21 @@ export class QuickInputList extends Disposable {
 		});
 	}
 
+	/**
+	 * Row heights for one picker. `undefined` restores the default 22px item and 30px separator.
+	 * Other pickers stay on the default because the heights are cleared when a picker hides.
+	 */
+	setLayoutHeights(itemHeight: number | undefined, separatorHeight: number | undefined): void {
+		if (this._itemDelegate.itemHeight === itemHeight && this._itemDelegate.separatorHeight === separatorHeight) {
+			return;
+		}
+		this._itemDelegate.itemHeight = itemHeight;
+		this._itemDelegate.separatorHeight = separatorHeight;
+		if (this._elementTree.length) {
+			this._tree.rerender();
+		}
+	}
+
 	setElements(inputElements: QuickPickItem[]): void {
 		this._elementDisposable.clear();
 		this._lastQueryString = undefined;
@@ -1135,7 +1156,7 @@ export class QuickInputList extends Disposable {
 		this._elementTree = inputElements.reduce((result, item, index) => {
 			let element: IQuickPickElement;
 			if (item.type === 'separator') {
-				if (!item.buttons) {
+				if (!item.buttons && !item.asItem) {
 					// This separator will be rendered as a part of the list item
 					return result;
 				}
@@ -1148,7 +1169,7 @@ export class QuickInputList extends Disposable {
 			} else {
 				const previous = index > 0 ? inputElements[index - 1] : undefined;
 				let separator: IQuickPickSeparator | undefined;
-				if (previous && previous.type === 'separator' && !previous.buttons) {
+				if (previous && previous.type === 'separator' && !previous.buttons && !previous.asItem) {
 					separator = previous;
 				}
 				const qpi = new QuickPickItemElement(

@@ -6,9 +6,11 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { MenuId, Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IViewsService } from '../../../services/views/common/viewsService.js';
+import { INexusOpenChat, NEXUS_CHAT_GET_OPEN_CHAT_COMMAND_ID, NEXUS_CHAT_NEW_CHAT_COMMAND_ID, NEXUS_CHAT_SET_MODE_COMMAND_ID, NEXUS_CHAT_SHOW_COMMAND_ID, isNexusChatMode } from '../common/nexusOpenChat.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
@@ -51,7 +53,7 @@ registerAction2(class NewNexusChatAction extends ViewAction<NexusChatViewPane> {
 	constructor() {
 		super({
 			viewId: NEXUS_CHAT_VIEW_ID,
-			id: 'nexusChat.newChat',
+			id: NEXUS_CHAT_NEW_CHAT_COMMAND_ID,
 			title: localize2('nexusChat.newChat', "New Chat"),
 			f1: true,
 			icon: Codicon.add,
@@ -65,6 +67,55 @@ registerAction2(class NewNexusChatAction extends ViewAction<NexusChatViewPane> {
 
 	runInView(_accessor: ServicesAccessor, view: NexusChatViewPane): void {
 		view.newChat();
+	}
+});
+
+registerAction2(class ShowNexusChatAction extends Action2 {
+	constructor() {
+		super({
+			id: NEXUS_CHAT_SHOW_COMMAND_ID,
+			title: localize2('nexusChat.showChat', "Show NexusIDE Chat"),
+			f1: false,
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await accessor.get(IViewsService).openView(NEXUS_CHAT_VIEW_ID, true);
+	}
+});
+
+registerAction2(class SetNexusChatModeAction extends Action2 {
+	constructor() {
+		super({
+			id: NEXUS_CHAT_SET_MODE_COMMAND_ID,
+			title: localize2('nexusChat.setMode', "Set NexusIDE Chat Mode"),
+			f1: false,
+		});
+	}
+
+	async run(accessor: ServicesAccessor, mode: unknown): Promise<void> {
+		if (!isNexusChatMode(mode)) {
+			return;
+		}
+		const view = await accessor.get(IViewsService).openView<NexusChatViewPane>(NEXUS_CHAT_VIEW_ID, true);
+		if (view instanceof NexusChatViewPane) {
+			view.setMode(mode);
+		}
+	}
+});
+
+registerAction2(class GetNexusOpenChatAction extends Action2 {
+	constructor() {
+		super({
+			id: NEXUS_CHAT_GET_OPEN_CHAT_COMMAND_ID,
+			title: localize2('nexusChat.getOpenChat', "Get Open NexusIDE Chat"),
+			f1: false,
+		});
+	}
+
+	run(accessor: ServicesAccessor): INexusOpenChat | undefined {
+		const view = accessor.get(IViewsService).getViewWithId<NexusChatViewPane>(NEXUS_CHAT_VIEW_ID);
+		return view instanceof NexusChatViewPane ? view.getOpenChat() : undefined;
 	}
 });
 

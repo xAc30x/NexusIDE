@@ -183,6 +183,55 @@ suite('QuickInput', () => { // https://github.com/microsoft/vscode/issues/147543
 		assert.deepStrictEqual({ attachedBefore, attachedAfter: fixture.querySelectorAll('.quick-input-widget').length }, { attachedBefore: 1, attachedAfter: 0 });
 	});
 
+	test('asItem separators are their own rows and picker presentation is cleared on hide', () => {
+		controller.layout({ height: 500, width: 600 }, 0);
+		const picker = store.add(controller.createQuickPick({ useSeparators: true }));
+		const header = mainWindow.document.createElement('div');
+		header.className = 'nexus-test-header';
+		picker.containerClass = 'nexus-command-palette';
+		picker.headerContent = header;
+		picker.itemHeight = 32;
+		picker.separatorHeight = 28;
+		picker.sortByLabel = false;
+		picker.items = [
+			{ type: 'separator', label: 'Agent', asItem: true },
+			{ label: 'Go Back' },
+		];
+		picker.show();
+
+		const rows = [...fixture.querySelectorAll<HTMLElement>('.monaco-list-row')].filter(row => !row.classList.contains('monaco-tree-sticky-row'));
+		const separatorRow = rows.find(row => row.querySelector('.quick-input-list-separator-as-item'));
+		const itemRow = rows.find(row => row.querySelector('.quick-input-list-entry') && !row.querySelector('.quick-input-list-separator-as-item'));
+		assert.deepStrictEqual({
+			className: fixture.querySelector('.quick-input-widget')?.classList.contains('nexus-command-palette'),
+			headerAttached: header.isConnected,
+			headerText: separatorRow?.textContent?.trim(),
+			separatorHeight: separatorRow?.style.height,
+			itemHeight: itemRow?.style.height,
+		}, {
+			className: true,
+			headerAttached: true,
+			headerText: 'Agent',
+			separatorHeight: '28px',
+			itemHeight: '32px',
+		});
+
+		picker.hide();
+		assert.deepStrictEqual({
+			className: !!fixture.querySelector('.quick-input-widget.nexus-command-palette'),
+			headerAttached: header.isConnected,
+		}, { className: false, headerAttached: false });
+
+		const next = store.add(controller.createQuickPick());
+		next.show();
+		assert.deepStrictEqual({
+			className: !!fixture.querySelector('.quick-input-widget.nexus-command-palette'),
+			headerAttached: header.isConnected,
+			separatorRows: fixture.querySelectorAll('.quick-input-list-separator-as-item').length,
+		}, { className: false, headerAttached: false, separatorRows: 0 });
+		next.hide();
+	});
+
 	test('custom content is exclusive to QuickWidget and cleared when switching controls', () => {
 		const widget = store.add(controller.createQuickWidget());
 		const content = mainWindow.document.createElement('div');

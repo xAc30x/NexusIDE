@@ -565,6 +565,11 @@ export class QuickPick<T extends IQuickPickItem, O extends { useSeparators: bool
 	private _hideInput: boolean | undefined;
 	private _hideCountBadge: boolean | undefined;
 	private _hideCheckAll: boolean | undefined;
+	private _containerClass: string | undefined;
+	private _appliedContainerClass: string | undefined;
+	private _headerContent: HTMLElement | undefined;
+	private _itemHeight: number | undefined;
+	private _separatorHeight: number | undefined;
 	private _focusEventBufferer = new EventBufferer();
 
 	readonly type = QuickInputType.QuickPick;
@@ -875,6 +880,42 @@ export class QuickPick<T extends IQuickPickItem, O extends { useSeparators: bool
 		this.update();
 	}
 
+	get containerClass() {
+		return this._containerClass;
+	}
+
+	set containerClass(containerClass: string | undefined) {
+		this._containerClass = containerClass;
+		this.update();
+	}
+
+	get headerContent(): unknown /* HTMLElement */ | undefined {
+		return this._headerContent;
+	}
+
+	set headerContent(headerContent: unknown /* HTMLElement */ | undefined) {
+		this._headerContent = dom.isHTMLElement(headerContent) ? headerContent : undefined;
+		this.update();
+	}
+
+	get itemHeight() {
+		return this._itemHeight;
+	}
+
+	set itemHeight(itemHeight: number | undefined) {
+		this._itemHeight = itemHeight;
+		this.update();
+	}
+
+	get separatorHeight() {
+		return this._separatorHeight;
+	}
+
+	set separatorHeight(separatorHeight: number | undefined) {
+		this._separatorHeight = separatorHeight;
+		this.update();
+	}
+
 	onDidChangeSelection = this.onDidChangeSelectionEmitter.event;
 
 	onDidTriggerItemButton = this.onDidTriggerItemButtonEmitter.event;
@@ -1026,10 +1067,49 @@ export class QuickPick<T extends IQuickPickItem, O extends { useSeparators: bool
 		});
 	}
 
+	override didHide(reason = QuickInputHideReason.Other): void {
+		this.clearPresentation();
+		super.didHide(reason);
+	}
+
+	private applyPresentation(): void {
+		const container = this.ui.container;
+		if (this._appliedContainerClass && this._appliedContainerClass !== this._containerClass) {
+			container.classList.remove(this._appliedContainerClass);
+			this._appliedContainerClass = undefined;
+		}
+		if (this._containerClass) {
+			container.classList.add(this._containerClass);
+			this._appliedContainerClass = this._containerClass;
+		}
+		const widget = this.ui.widget;
+		if (!this._headerContent) {
+			if (widget.firstChild) {
+				dom.reset(widget);
+			}
+		} else if (this._headerContent.parentElement !== widget) {
+			dom.reset(widget);
+			widget.appendChild(this._headerContent);
+		}
+		this.ui.list.setLayoutHeights(this._itemHeight, this._separatorHeight);
+	}
+
+	private clearPresentation(): void {
+		if (this._appliedContainerClass) {
+			this.ui.container.classList.remove(this._appliedContainerClass);
+			this._appliedContainerClass = undefined;
+		}
+		if (this._headerContent?.parentElement === this.ui.widget) {
+			this._headerContent.remove();
+		}
+		this.ui.list.setLayoutHeights(undefined, undefined);
+	}
+
 	protected override update() {
 		if (!this.visible) {
 			return;
 		}
+		this.applyPresentation();
 		// store the scrollTop before it is reset
 		const scrollTopBefore = this.keepScrollPosition ? this.scrollTop : 0;
 		const hasDescription = !!this.description;

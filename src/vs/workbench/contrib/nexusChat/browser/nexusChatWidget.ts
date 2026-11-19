@@ -14,6 +14,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { AIExecutionMode, AIPermissionDecision, IAIProviderInfo, IAIService } from '../../../../platform/ai/common/ai.js';
+import { INexusOpenChat } from '../common/nexusOpenChat.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js';
@@ -109,6 +110,8 @@ export class NexusChatWidget extends Disposable {
 	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
+	/** When the open chat last changed. Unset until the user has sent a message. */
+	private updatedAt: number | undefined;
 	private readonly codeBlockRenderer: NexusChatCodeBlockRenderer;
 	private readonly previews: NexusChatPreviews;
 	private readonly codeBlockHost: INexusChatCodeBlockHost = {
@@ -204,7 +207,10 @@ export class NexusChatWidget extends Disposable {
 		this.updateTrustState();
 		void this.refreshProviders();
 
-		this._register(this.model.onDidChange(() => this.renderMessages()));
+		this._register(this.model.onDidChange(() => {
+			this.noteChatActivity();
+			this.renderMessages();
+		}));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.updateTrustState()));
 		if (options.folder) {
 			this._register(this.workspaceTrustManagementService.onDidChangeTrustedFolders(() => void this.refreshTrust()));
@@ -229,6 +235,35 @@ export class NexusChatWidget extends Disposable {
 	newChat(): void {
 		this.model.clear();
 		this.showNotice(undefined);
+	}
+
+	/** Selects a mode in the chat. The select still labels `debug` as Fix. */
+	setMode(mode: AIExecutionMode): void {
+		if (!PANEL_MODES.some(entry => entry.mode === mode)) {
+			return;
+		}
+		this.modeSelect.value = mode;
+	}
+
+	/**
+	 * The open chat for the command palette. The title is the first line of
+	 * the first user message.
+	 */
+	getOpenChat(): INexusOpenChat | undefined {
+		const message = this.model.messages.find(entry => entry.role === 'user' && entry.text.trim().length > 0);
+		if (!message || this.updatedAt === undefined) {
+			return undefined;
+		}
+		const line = message.text.trim().split(/\r?\n/, 1)[0]?.replace(/\s+/g, ' ').trim() ?? '';
+		if (!line) {
+			return undefined;
+		}
+		return { title: line.length > 200 ? line.slice(0, 200) : line, updatedAt: this.updatedAt };
+	}
+
+	private noteChatActivity(): void {
+		const hasUserMessage = this.model.messages.some(entry => entry.role === 'user' && entry.text.trim().length > 0);
+		this.updatedAt = hasUserMessage ? Date.now() : undefined;
 	}
 
 	private async submit(): Promise<void> {

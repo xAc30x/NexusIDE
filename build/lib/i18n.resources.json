@@ -183,6 +183,10 @@
 			"project": "vscode-workbench"
 		},
 		{
+			"name": "vs/workbench/contrib/nexusCommandPalette",
+			"project": "vscode-workbench"
+		},
+		{
 			"name": "vs/workbench/contrib/notebook",
 			"project": "vscode-workbench"
 		},

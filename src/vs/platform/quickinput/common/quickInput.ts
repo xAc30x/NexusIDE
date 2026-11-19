@@ -114,6 +114,11 @@ export interface IQuickPickSeparator {
 	ariaLabel?: string;
 	buttons?: readonly IQuickInputButton[];
 	tooltip?: string | IMarkdownString;
+	/**
+	 * Draw this separator as its own row. Without it, a separator that has no
+	 * buttons is painted on the right of the following item.
+	 */
+	asItem?: boolean;
 }
 
 export interface IKeyMods {
@@ -734,6 +739,27 @@ export interface IQuickPick<T extends IQuickPickItem, O extends { useSeparators:
 	 * Whether to hide the "Check All" checkbox.
 	 */
 	hideCheckAll: boolean;
+
+	/**
+	 * Extra class on the quick input widget while this picker is visible.
+	 * Removed when the picker hides so the next picker is unchanged.
+	 */
+	containerClass: string | undefined;
+
+	/**
+	 * Element shown between the input and the list. Removed from the widget when the picker hides.
+	 */
+	headerContent: unknown /* HTMLElement */ | undefined;
+
+	/**
+	 * Row height for items while this picker is visible. `undefined` keeps the default.
+	 */
+	itemHeight: number | undefined;
+
+	/**
+	 * Row height for a separator drawn as its own row. `undefined` keeps the default.
+	 */
+	separatorHeight: number | undefined;
 
 	/**
 	 * Focus a particular item in the list. Used internally for keyboard navigation.

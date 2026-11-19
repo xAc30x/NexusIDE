@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/anythingQuickAccess.css';
-import { IQuickInputButton, IKeyMods, quickPickItemScorerAccessor, QuickPickItemScorerAccessor, IQuickPick, IQuickPickItemWithResource, QuickInputHideReason, IQuickInputService, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputButton, IKeyMods, quickPickItemScorerAccessor, QuickPickItemScorerAccessor, IQuickPick, IQuickPickItem, IQuickPickItemWithResource, QuickInputHideReason, IQuickInputService, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { IPickerQuickAccessItem, PickerQuickAccessProvider, TriggerAction, FastAndSlowPicks, Picks, PicksWithActive } from '../../../../platform/quickinput/browser/pickerQuickAccess.js';
 import { prepareQuery, IPreparedQuery, compareItemsByFuzzyScore, scoreItemFuzzy, FuzzyScorerCache } from '../../../../base/common/fuzzyScorer.js';
 import { IFileQueryBuilderOptions, QueryBuilder } from '../../../services/search/common/queryBuilder.js';
@@ -102,6 +102,15 @@ interface IAnythingPickState extends IDisposable {
 	set(picker: IQuickPick<IAnythingQuickPickItem, { useSeparators: true }>, useDefaultWorkspace: boolean): void;
 }
 
+
+function isPaletteFastAndSlowPicks(obj: unknown): obj is FastAndSlowPicks<IAnythingQuickPickItem> {
+	const candidate = obj as FastAndSlowPicks<IAnythingQuickPickItem> | undefined;
+	return !!candidate?.picks && candidate.additionalPicks instanceof Promise;
+}
+
+function palettePicksToArray(picks: Picks<IAnythingQuickPickItem>): readonly (IAnythingQuickPickItem | IQuickPickSeparator)[] {
+	return Array.isArray(picks) ? picks : picks.items;
+}
 
 export class AnythingQuickAccessProvider extends PickerQuickAccessProvider<IAnythingQuickPickItem> {
 
@@ -223,6 +232,43 @@ export class AnythingQuickAccessProvider extends PickerQuickAccessProvider<IAnyt
 		this.fileQueryBuilder = this.instantiationService.createInstance(QueryBuilder);
 		this.workspaceSymbolsQuickAccess = this._register(instantiationService.createInstance(SymbolsQuickAccessProvider));
 		this.editorSymbolsQuickAccess = this.instantiationService.createInstance(GotoSymbolQuickAccessProvider);
+		this._register(toDisposable(() => {
+			this.paletteFilePickDisposables?.dispose();
+			this.paletteFilePickDisposables = undefined;
+		}));
+	}
+
+	private paletteFilePickDisposables: DisposableStore | undefined;
+
+	/**
+	 * File and history rows for a filter, without this provider taking over the picker.
+	 * The Nexus command palette merges these into its own list.
+	 */
+	async getPaletteFilePicks<T extends IQuickPickItem>(picker: IQuickPick<T, { useSeparators: true }>, filter: string, token: CancellationToken): Promise<readonly (IAnythingQuickPickItem | IQuickPickSeparator)[]> {
+		const anythingPicker = picker as unknown as IQuickPick<IAnythingQuickPickItem, { useSeparators: true }>;
+		if (this.pickState.picker !== anythingPicker) {
+			this.pickState.set(anythingPicker, true);
+		}
+		this.paletteFilePickDisposables?.dispose();
+		const disposables = this.paletteFilePickDisposables = new DisposableStore();
+		const picks = this._getPicks(filter, disposables, token);
+		return this.flattenPalettePicks(picks, token);
+	}
+
+	private async flattenPalettePicks(picks: Picks<IAnythingQuickPickItem> | Promise<Picks<IAnythingQuickPickItem>> | FastAndSlowPicks<IAnythingQuickPickItem> | null, token: CancellationToken): Promise<readonly (IAnythingQuickPickItem | IQuickPickSeparator)[]> {
+		if (!picks || token.isCancellationRequested) {
+			return [];
+		}
+		const resolved = await picks;
+		if (!resolved || token.isCancellationRequested) {
+			return [];
+		}
+		if (isPaletteFastAndSlowPicks(resolved)) {
+			const fast = palettePicksToArray(resolved.picks);
+			const slow = palettePicksToArray(await resolved.additionalPicks);
+			return token.isCancellationRequested ? [] : [...fast, ...slow];
+		}
+		return palettePicksToArray(resolved);
 	}
 
 	private get configuration() {

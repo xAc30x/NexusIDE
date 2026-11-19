@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { AIExecutionMode } from '../../../../platform/ai/common/ai.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
@@ -13,6 +14,7 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
+import { INexusOpenChat } from '../common/nexusOpenChat.js';
 import { NexusChatWidget } from './nexusChatWidget.js';
 
 export const NEXUS_CHAT_VIEW_CONTAINER_ID = 'workbench.view.nexusChat';
@@ -25,6 +27,8 @@ export const NEXUS_CHAT_VIEW_ID = 'workbench.view.nexusChat.chat';
 export class NexusChatViewPane extends ViewPane {
 
 	private widget: NexusChatWidget | undefined;
+	/** Applied once the widget exists, if setMode ran first. */
+	private pendingMode: AIExecutionMode | undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -49,6 +53,10 @@ export class NexusChatViewPane extends ViewPane {
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 		this.widget = this._register(this.instantiationService.createInstance(NexusChatWidget, container, {}));
+		if (this.pendingMode) {
+			this.widget.setMode(this.pendingMode);
+			this.pendingMode = undefined;
+		}
 	}
 
 	protected override layoutBody(height: number, width: number): void {
@@ -65,5 +73,19 @@ export class NexusChatViewPane extends ViewPane {
 	newChat(): void {
 		this.widget?.newChat();
 		this.focus();
+	}
+
+	/** Selects a mode. `debug` stays labeled Fix in the chat. */
+	setMode(mode: AIExecutionMode): void {
+		if (this.widget) {
+			this.widget.setMode(mode);
+		} else {
+			this.pendingMode = mode;
+		}
+	}
+
+	/** The open chat, for the command palette. */
+	getOpenChat(): INexusOpenChat | undefined {
+		return this.widget?.getOpenChat();
 	}
 }
