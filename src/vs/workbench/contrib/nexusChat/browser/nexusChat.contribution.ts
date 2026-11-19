@@ -17,6 +17,7 @@ import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContaine
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
 import { NEXUS_AGENTS_EDITOR_ID, NexusAgentsEditorInput, NexusAgentsEditorPane, NexusAgentsEditorSerializer } from './nexusAgentsEditor.js';
+import './nexusAgentsDocumentService.js';
 import { NEXUS_CHAT_VIEW_CONTAINER_ID, NEXUS_CHAT_VIEW_ID, NexusChatViewPane } from './nexusChatView.js';
 import '../common/nexusChatConfiguration.js';
 

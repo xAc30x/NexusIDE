@@ -39,6 +39,22 @@ suite('NexusChatModel', () => {
 
 	const ask = { mode: 'ask', providerId: 'test' } as const;
 
+	test('a saved chat can be shown again, and a running reply is not replaced', async () => {
+		const service = createService();
+		const model = createModel(service);
+		await model.send('hi', ask);
+		assert.strictEqual(model.restore('saved-thread', [{ role: 'user', text: 'older' }]), false);
+		assert.strictEqual(model.threadId !== 'saved-thread', true);
+
+		service.hub.end(service.streamIds[0], 'completed');
+		assert.strictEqual(model.restore('saved-thread', [{ role: 'user', text: 'older' }, { role: 'assistant', text: 'done' }]), true);
+		assert.strictEqual(model.threadId, 'saved-thread');
+		assert.deepStrictEqual(model.capture(), {
+			threadId: 'saved-thread',
+			messages: [{ role: 'user', text: 'older' }, { role: 'assistant', text: 'done' }],
+		});
+	});
+
 	test('sends the prompt and streams the reply until it completes', async () => {
 		const service = createService();
 		const model = createModel(service);

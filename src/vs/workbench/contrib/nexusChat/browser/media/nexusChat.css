@@ -314,3 +314,60 @@
 .nexus-chat-codeblock-body .monaco-tokenized-source {
 	white-space: pre;
 }
+
+.nexus-agents {
+	display: flex;
+	height: 100%;
+	min-height: 0;
+	min-width: 0;
+}
+
+.nexus-agents-list {
+	width: 240px;
+	flex: none;
+	overflow: auto;
+	box-sizing: border-box;
+	padding: 8px;
+}
+
+.nexus-agents-main {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.nexus-agents-chat {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.nexus-agents-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 4px 8px;
+}
+
+.nexus-agents-heading {
+	font-weight: 600;
+	margin-top: 12px;
+}
+
+.nexus-agents-customize {
+	color: var(--vscode-descriptionForeground);
+	margin-top: 12px;
+}
+
+.nexus-agents-status:empty {
+	display: none;
+}
+
+.nexus-agents-status {
+	color: var(--vscode-errorForeground);
+	padding: 0 8px;
+}
