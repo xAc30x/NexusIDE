@@ -11,9 +11,12 @@ import { SyncDescriptor } from '../../../../platform/instantiation/common/descri
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { ViewAction } from '../../../browser/parts/views/viewPane.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
+import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
+import { NEXUS_AGENTS_EDITOR_ID, NexusAgentsEditorInput, NexusAgentsEditorPane, NexusAgentsEditorSerializer } from './nexusAgentsEditor.js';
 import { NEXUS_CHAT_VIEW_CONTAINER_ID, NEXUS_CHAT_VIEW_ID, NexusChatViewPane } from './nexusChatView.js';
 import '../common/nexusChatConfiguration.js';
 
@@ -64,3 +67,14 @@ registerAction2(class NewNexusChatAction extends ViewAction<NexusChatViewPane> {
 		view.newChat();
 	}
 });
+
+// The NexusIDE Agents chat, shown in its own window. The commands and top bar
+// buttons that move between windows are desktop-only, in
+// ../electron-browser/nexusAgentsWindow.contribution.ts.
+
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(NexusAgentsEditorPane, NEXUS_AGENTS_EDITOR_ID, localize('nexusAgents.editor', "NexusIDE Agents")),
+	[new SyncDescriptor(NexusAgentsEditorInput)]
+);
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(NexusAgentsEditorInput.ID, NexusAgentsEditorSerializer);
