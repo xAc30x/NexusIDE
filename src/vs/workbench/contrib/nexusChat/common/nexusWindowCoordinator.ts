@@ -31,12 +31,18 @@ export interface INexusWindowChannel {
 export interface INexusWindowCoordinatorHost {
 	/** The id of this window, which other windows use to focus it. */
 	readonly windowId: number;
-	/** The folders of the Agents chats open in this window. */
+	/** The folders this window shows an Agents chat for. */
 	agentsFolders(): readonly string[];
+	/** Called when another window found this one as the Agents window of `folder`, before it is brought to the front. */
+	revealAgents?(folder: string): void;
 }
 
-/** How long a window waits for the others to answer before it decides nobody will. */
-export const NEXUS_WINDOW_ANSWER_TIMEOUT_MS = 500;
+/**
+ * How long a window waits for the others to answer before it decides nobody
+ * will. Clicking Agent waits this long before it opens a new window, so it is
+ * kept short; windows answer within a few milliseconds when they are idle.
+ */
+export const NEXUS_WINDOW_ANSWER_TIMEOUT_MS = 200;
 /** How long a requested Agents window has to start and claim its folder. */
 export const NEXUS_HANDOFF_EXPIRY_MS = 60_000;
 
@@ -105,6 +111,7 @@ export class NexusWindowCoordinator extends Disposable {
 		switch (message.kind) {
 			case 'findAgents':
 				if (this.host.agentsFolders().includes(message.folder)) {
+					this.host.revealAgents?.(message.folder);
 					this.channel.postData({ kind: 'agentsFound', requestId: message.requestId, windowId: this.host.windowId });
 				}
 				break;

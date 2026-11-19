@@ -6,12 +6,12 @@
 import { Dimension } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -19,7 +19,6 @@ import { ITelemetryService } from '../../../../platform/telemetry/common/telemet
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
-import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { EditorInputCapabilities, IEditorOpenContext, IEditorSerializer, IUntypedEditorInput } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
@@ -31,10 +30,11 @@ export const NEXUS_AGENTS_EDITOR_ID = 'workbench.editor.nexusAgents';
 export const NEXUS_AGENTS_SCHEME = 'nexus-agents';
 
 /**
- * True in a window that shows the NexusIDE Agents chat. The top bar shows the
- * "IDE" button there, and the "Agent" button in every other window.
+ * True in a window that was opened for the NexusIDE Agents chat, for as long
+ * as it is open. The top bar shows the "IDE" button there, and the "Agent"
+ * button in every other window.
  */
-export const InNexusAgentsWindowContext = new RawContextKey<boolean>('nexusAgentsWindow', false, localize('nexusAgents.inWindow', "Whether the window shows the NexusIDE Agents chat."));
+export const InNexusAgentsWindowContext = new RawContextKey<boolean>('nexusAgentsWindow', false, localize('nexusAgents.inWindow', "Whether the window was opened for the NexusIDE Agents chat."));
 
 const nexusAgentsIcon = registerIcon('nexus-agents-editor-icon', Codicon.robot, localize('nexusAgents.icon', "Icon of the NexusIDE Agents window."));
 
@@ -182,22 +182,5 @@ export async function showNexusAgentsChat(editorService: IEditorService, layoutS
 	await editorService.openEditor(new NexusAgentsEditorInput(nexusAgentsResource(folder)), { pinned: true });
 	for (const part of [Parts.SIDEBAR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART]) {
 		layoutService.setPartHidden(true, part);
-	}
-}
-
-/** Keeps {@link InNexusAgentsWindowContext} true while this window has an Agents chat open. */
-export class NexusAgentsWindowContextContribution extends Disposable implements IWorkbenchContribution {
-
-	static readonly ID = 'workbench.contrib.nexusAgentsWindowContext';
-
-	constructor(
-		@IEditorService editorService: IEditorService,
-		@IContextKeyService contextKeyService: IContextKeyService,
-	) {
-		super();
-		const inAgentsWindow = InNexusAgentsWindowContext.bindTo(contextKeyService);
-		const update = () => inAgentsWindow.set(editorService.editors.some(editor => editor instanceof NexusAgentsEditorInput));
-		update();
-		this._register(editorService.onDidEditorsChange(update));
 	}
 }

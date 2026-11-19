@@ -37,19 +37,22 @@ suite('NexusWindowCoordinator', () => {
 	function createWindows(now: () => number = Date.now) {
 		const disposables = store.add(new DisposableStore());
 		const bus = new TestBus();
+		const revealed: { windowId: number; folder: string }[] = [];
 		const window = (windowId: number, agentsFolders: string[] = []) =>
-			store.add(new NexusWindowCoordinator(bus.join(disposables), { windowId, agentsFolders: () => agentsFolders }, now));
-		return { window };
+			store.add(new NexusWindowCoordinator(bus.join(disposables), { windowId, agentsFolders: () => agentsFolders, revealAgents: folder => revealed.push({ windowId, folder }) }, now));
+		return { window, revealed };
 	}
 
 	test('finds the window that shows the Agents chat of the folder', () => runWithFakedTimers({}, async () => {
-		const { window } = createWindows();
+		const { window, revealed } = createWindows();
 		const codeWindow = window(1);
 		window(2, ['file:///other']);
 		window(3, ['file:///project']);
 
 		assert.strictEqual(await codeWindow.findAgentsWindow('file:///project'), 3);
+		assert.deepStrictEqual(revealed, [{ windowId: 3, folder: 'file:///project' }], 'the found window is told to show its chat');
 		assert.strictEqual(await codeWindow.findAgentsWindow(''), undefined, 'no window has an Agents chat without a folder');
+		assert.strictEqual(revealed.length, 1);
 	}));
 
 	test('a new window gets the folder it was opened for, only once', () => runWithFakedTimers({}, async () => {

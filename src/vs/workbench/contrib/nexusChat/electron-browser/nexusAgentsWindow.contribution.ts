@@ -9,17 +9,19 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { TitleBarLeadingActionsGroup } from '../../../browser/parts/titlebar/titlebarActions.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IsAuxiliaryWindowContext } from '../../../common/contextkeys.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
+import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { InNexusAgentsWindowContext, NexusAgentsEditorInput, showNexusAgentsChat } from '../browser/nexusAgentsEditor.js';
 import { NexusWindowCoordinator, NexusWindowMessage } from '../common/nexusWindowCoordinator.js';
 
@@ -46,6 +48,13 @@ export class NexusAgentsWindowService extends Disposable implements INexusAgents
 	declare readonly _serviceBrand: undefined;
 
 	private readonly coordinator: NexusWindowCoordinator;
+	private readonly inAgentsWindow: IContextKey<boolean>;
+	/**
+	 * The folder (as a key) of the Agents chat this window was opened for, or
+	 * `undefined` in a code window. A window stays an Agents window until it
+	 * closes, even when its chat tab is closed.
+	 */
+	private agentsFolder: string | undefined;
 
 	constructor(
 		@INativeHostService private readonly nativeHostService: INativeHostService,
@@ -53,16 +62,23 @@ export class NexusAgentsWindowService extends Disposable implements INexusAgents
 		@IEditorService private readonly editorService: IEditorService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IContextKeyService contextKeyService: IContextKeyService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
+		this.inAgentsWindow = InNexusAgentsWindowContext.bindTo(contextKeyService);
 		this.coordinator = this._register(new NexusWindowCoordinator(
 			this._register(new BroadcastDataChannel<NexusWindowMessage>(NEXUS_WINDOWS_CHANNEL)),
 			{
 				windowId: nativeHostService.windowId,
-				agentsFolders: () => this.agentsChats().map(editor => folderKey(editor.folder)),
+				agentsFolders: () => this.agentsFolder !== undefined ? [this.agentsFolder] : [],
+				revealAgents: () => this.revealChat(),
 			},
 		));
+		// An Agents window restored after a restart is recognized by its chat.
+		this.recognizeRestoredChat();
+		this._register(editorService.onDidEditorsChange(() => this.recognizeRestoredChat()));
 	}
 
 	async openAgentsWindow(): Promise<void> {
@@ -81,7 +97,7 @@ export class NexusAgentsWindowService extends Disposable implements INexusAgents
 	}
 
 	async showIDEWindow(): Promise<void> {
-		const folder = this.agentsChats()[0]?.folder;
+		const folder = this.agentsFolderUri();
 		// With `forceNewWindow`, a window that already has the folder open is
 		// brought to the front instead of opening a second one.
 		if (folder) {
@@ -93,15 +109,46 @@ export class NexusAgentsWindowService extends Disposable implements INexusAgents
 
 	async acceptHandoff(): Promise<void> {
 		// An Agents window starts as an empty window. Windows with a folder are code windows.
-		if (this.workspaceContextService.getWorkbenchState() !== WorkbenchState.EMPTY) {
+		if (!this.canBeAgentsWindow() || this.agentsFolder !== undefined) {
 			return;
 		}
 		const key = await this.coordinator.claimHandoff();
-		if (key === undefined) {
+		if (key === undefined || this.agentsFolder !== undefined) {
 			return;
 		}
-		const folder = key ? URI.parse(key, true) : undefined;
-		await showNexusAgentsChat(this.editorService, this.layoutService, folder);
+		// The top bar shows "IDE" from here on, before the chat has opened.
+		this.becomeAgentsWindow(key);
+		await this.lifecycleService.when(LifecyclePhase.Restored);
+		await showNexusAgentsChat(this.editorService, this.layoutService, this.agentsFolderUri());
+	}
+
+	private canBeAgentsWindow(): boolean {
+		return this.workspaceContextService.getWorkbenchState() === WorkbenchState.EMPTY;
+	}
+
+	private becomeAgentsWindow(key: string): void {
+		this.agentsFolder = key;
+		this.inAgentsWindow.set(true);
+	}
+
+	private recognizeRestoredChat(): void {
+		const chat = this.agentsChats()[0];
+		if (chat && this.agentsFolder === undefined && this.canBeAgentsWindow()) {
+			this.becomeAgentsWindow(folderKey(chat.folder));
+		}
+	}
+
+	/** Opens the chat again when its tab was closed, so the window is not empty when brought to the front. */
+	private revealChat(): void {
+		if (this.agentsChats().length > 0) {
+			return;
+		}
+		showNexusAgentsChat(this.editorService, this.layoutService, this.agentsFolderUri())
+			.catch(error => this.logService.error('[NexusIDE] could not show the Agents chat again', error));
+	}
+
+	private agentsFolderUri(): URI | undefined {
+		return this.agentsFolder ? URI.parse(this.agentsFolder, true) : undefined;
 	}
 
 	/** The folder of this code window that an Agents chat works in: its first folder on disk. */
@@ -121,7 +168,11 @@ function folderKey(folder: URI | undefined): string {
 
 registerSingleton(INexusAgentsWindowService, NexusAgentsWindowService, InstantiationType.Eager);
 
-/** Starts answering the other windows, and shows the Agents chat when this window was opened for it. */
+/**
+ * Starts answering the other windows, and shows the Agents chat when this
+ * window was opened for it. It starts with the window, so that a new Agents
+ * window shows the "IDE" button from the start instead of "Agent".
+ */
 class NexusAgentsWindowStartup implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.nexusAgentsWindowStartup';
@@ -134,7 +185,7 @@ class NexusAgentsWindowStartup implements IWorkbenchContribution {
 	}
 }
 
-registerWorkbenchContribution2(NexusAgentsWindowStartup.ID, NexusAgentsWindowStartup, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(NexusAgentsWindowStartup.ID, NexusAgentsWindowStartup, WorkbenchPhase.BlockStartup);
 
 registerAction2(class OpenNexusAgentsWindowAction extends Action2 {
 	constructor() {
@@ -168,24 +219,28 @@ registerAction2(class ShowNexusIDEWindowAction extends Action2 {
 });
 
 // Top bar buttons: "IDE" in an Agents window, "Agent" in every other window.
-// Pop-out editor windows show neither.
+// Pop-out editor windows show neither. They lead the buttons on the right of
+// the top bar, which stay visible in a narrow window (the buttons next to the
+// title are hidden when there is not enough room).
 
-MenuRegistry.appendMenuItem(MenuId.TitleBarAdjacentCenter, {
+MenuRegistry.appendMenuItem(MenuId.TitleBar, {
 	command: {
 		id: OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID,
 		title: localize('nexusAgents.agentButton', "Agent"),
 		tooltip: localize('nexusAgents.agentButtonTooltip', "Open the NexusIDE Agents window"),
 	},
 	when: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), InNexusAgentsWindowContext.toNegated()),
+	group: TitleBarLeadingActionsGroup,
 	order: -1000,
 });
 
-MenuRegistry.appendMenuItem(MenuId.TitleBarAdjacentCenter, {
+MenuRegistry.appendMenuItem(MenuId.TitleBar, {
 	command: {
 		id: SHOW_NEXUS_IDE_WINDOW_COMMAND_ID,
 		title: localize('nexusAgents.ideButton', "IDE"),
 		tooltip: localize('nexusAgents.ideButtonTooltip', "Go to the NexusIDE window with your code"),
 	},
 	when: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), InNexusAgentsWindowContext),
+	group: TitleBarLeadingActionsGroup,
 	order: -1000,
 });

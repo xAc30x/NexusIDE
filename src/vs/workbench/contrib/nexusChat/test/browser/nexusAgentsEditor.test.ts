@@ -6,20 +6,16 @@
 import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { Emitter } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAIService } from '../../../../../platform/ai/common/ai.js';
-import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
-import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 import { IWorkspaceTrustManagementService, IWorkspaceTrustUriInfo } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
-import { GroupModelChangeKind } from '../../../../common/editor.js';
-import { IEditorService, IEditorsChangeEvent } from '../../../../services/editor/common/editorService.js';
+import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../services/layout/browser/layoutService.js';
 import { TestEditorGroupView, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
-import { InNexusAgentsWindowContext, NexusAgentsEditorInput, NexusAgentsEditorPane, NexusAgentsEditorSerializer, NexusAgentsWindowContextContribution, nexusAgentsFolder, nexusAgentsResource, showNexusAgentsChat } from '../../browser/nexusAgentsEditor.js';
+import { NexusAgentsEditorInput, NexusAgentsEditorPane, NexusAgentsEditorSerializer, nexusAgentsFolder, nexusAgentsResource, showNexusAgentsChat } from '../../browser/nexusAgentsEditor.js';
 import { TestAIService } from '../common/testAIService.js';
 
 suite('NexusAgentsEditor', () => {
@@ -135,23 +131,4 @@ suite('NexusAgentsEditor', () => {
 		assert.deepStrictEqual(hidden, [Parts.SIDEBAR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART]);
 	});
 
-	test('a window is an Agents window while it has an Agents chat open', () => {
-		const editors: EditorInput[] = [];
-		const onDidEditorsChange = store.add(new Emitter<IEditorsChangeEvent>());
-		const editorService = new class extends mock<IEditorService>() {
-			override get editors() { return editors; }
-			override readonly onDidEditorsChange = onDidEditorsChange.event;
-		};
-		const contextKeyService = new MockContextKeyService();
-		store.add(new NexusAgentsWindowContextContribution(editorService, contextKeyService as IContextKeyService));
-		const inAgentsWindow = () => contextKeyService.getContextKeyValue(InNexusAgentsWindowContext.key);
-
-		assert.strictEqual(inAgentsWindow(), false);
-		editors.push(store.add(new NexusAgentsEditorInput(nexusAgentsResource(project))));
-		onDidEditorsChange.fire({ groupId: 0, event: { kind: GroupModelChangeKind.EDITOR_OPEN } });
-		assert.strictEqual(inAgentsWindow(), true);
-		editors.length = 0;
-		onDidEditorsChange.fire({ groupId: 0, event: { kind: GroupModelChangeKind.EDITOR_CLOSE } });
-		assert.strictEqual(inAgentsWindow(), false);
-	});
 });
