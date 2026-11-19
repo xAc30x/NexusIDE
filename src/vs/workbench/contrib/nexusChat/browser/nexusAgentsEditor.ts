@@ -3,58 +3,73 @@
  *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Dimension, getWindowById } from '../../../../base/browser/dom.js';
-import { mainWindow } from '../../../../base/browser/window.js';
+import { Dimension } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
-import { EditorInputCapabilities, IEditorOpenContext, IUntypedEditorInput } from '../../../common/editor.js';
+import { IWorkbenchContribution } from '../../../common/contributions.js';
+import { EditorInputCapabilities, IEditorOpenContext, IEditorSerializer, IUntypedEditorInput } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
-import { AUX_WINDOW_GROUP, IEditorService } from '../../../services/editor/common/editorService.js';
-import { IHostService } from '../../../services/host/browser/host.js';
+import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
 import { NexusChatWidget } from './nexusChatWidget.js';
 
 export const NEXUS_AGENTS_EDITOR_ID = 'workbench.editor.nexusAgents';
-export const OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID = 'nexusChat.openAgentsWindow';
-export const SHOW_NEXUS_IDE_WINDOW_COMMAND_ID = 'nexusChat.showIDEWindow';
+export const NEXUS_AGENTS_SCHEME = 'nexus-agents';
 
 /**
- * True in a window that shows the NexusIDE Agents window. It is set on that
- * window's own context, so the top bar of each window can show its own button.
+ * True in a window that shows the NexusIDE Agents chat. The top bar shows the
+ * "IDE" button there, and the "Agent" button in every other window.
  */
-export const InNexusAgentsWindowContext = new RawContextKey<boolean>('nexusAgentsWindow', false, localize('nexusAgents.inWindow', "Whether the window shows the NexusIDE Agents window."));
+export const InNexusAgentsWindowContext = new RawContextKey<boolean>('nexusAgentsWindow', false, localize('nexusAgents.inWindow', "Whether the window shows the NexusIDE Agents chat."));
 
 const nexusAgentsIcon = registerIcon('nexus-agents-editor-icon', Codicon.robot, localize('nexusAgents.icon', "Icon of the NexusIDE Agents window."));
 
-/**
- * The content of the NexusIDE Agents window. There is only one: opening it
- * again shows the existing one.
- */
+/** The resource of the Agents chat that works in `folder`, or in no folder. */
+export function nexusAgentsResource(folder: URI | undefined): URI {
+	return URI.from({ scheme: NEXUS_AGENTS_SCHEME, path: '/agents', query: folder ? `folder=${encodeURIComponent(folder.toString())}` : '' });
+}
+
+/** The folder of an Agents chat resource, or `undefined` when it has none or the resource is not one. */
+export function nexusAgentsFolder(resource: URI): URI | undefined {
+	if (resource.scheme !== NEXUS_AGENTS_SCHEME) {
+		return undefined;
+	}
+	const value = new URLSearchParams(resource.query).get('folder');
+	if (!value) {
+		return undefined;
+	}
+	try {
+		return URI.parse(value, true);
+	} catch {
+		return undefined;
+	}
+}
+
+/** The Agents chat for one folder. The folder is part of its resource, so it is restored after a restart. */
 export class NexusAgentsEditorInput extends EditorInput {
 
 	static readonly ID = 'workbench.input.nexusAgents';
 
-	private static _instance: NexusAgentsEditorInput | undefined;
+	readonly folder: URI | undefined;
 
-	static get instance(): NexusAgentsEditorInput {
-		if (!NexusAgentsEditorInput._instance || NexusAgentsEditorInput._instance.isDisposed()) {
-			NexusAgentsEditorInput._instance = new NexusAgentsEditorInput();
-		}
-		return NexusAgentsEditorInput._instance;
+	constructor(readonly resource: URI) {
+		super();
+		this.folder = nexusAgentsFolder(resource);
 	}
-
-	readonly resource = URI.from({ scheme: 'nexus-agents', path: 'default' });
 
 	override get typeId(): string {
 		return NexusAgentsEditorInput.ID;
@@ -72,20 +87,46 @@ export class NexusAgentsEditorInput extends EditorInput {
 		return localize('nexusAgents.name', "NexusIDE Agents");
 	}
 
+	override getDescription(): string | undefined {
+		return this.folder?.fsPath;
+	}
+
 	override getIcon(): ThemeIcon {
 		return nexusAgentsIcon;
 	}
 
 	override matches(other: EditorInput | IUntypedEditorInput): boolean {
-		return super.matches(other) || other instanceof NexusAgentsEditorInput;
+		return super.matches(other) || (other instanceof NexusAgentsEditorInput && isEqual(other.resource, this.resource));
 	}
 }
 
-/** Shows a NexusIDE chat that starts in Agent mode. */
+export class NexusAgentsEditorSerializer implements IEditorSerializer {
+
+	canSerialize(editor: EditorInput): boolean {
+		return editor instanceof NexusAgentsEditorInput;
+	}
+
+	serialize(editor: EditorInput): string | undefined {
+		return editor instanceof NexusAgentsEditorInput ? editor.resource.toString() : undefined;
+	}
+
+	deserialize(_instantiationService: IInstantiationService, serialized: string): EditorInput | undefined {
+		try {
+			const resource = URI.parse(serialized, true);
+			return resource.scheme === NEXUS_AGENTS_SCHEME ? new NexusAgentsEditorInput(resource) : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+}
+
+/** Shows a NexusIDE chat that starts in Agent mode and works in the folder of its input. */
 export class NexusAgentsEditorPane extends EditorPane {
 
-	private widget: NexusChatWidget | undefined;
-	private inAgentsWindow: IContextKey<boolean> | undefined;
+	private container: HTMLElement | undefined;
+	private readonly widget = this._register(new MutableDisposable<NexusChatWidget>());
+	private widgetResource: URI | undefined;
+	private lastHeight: number | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -93,69 +134,70 @@ export class NexusAgentsEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super(NEXUS_AGENTS_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		this.widget = this._register(this.instantiationService.createInstance(NexusChatWidget, parent, { initialMode: 'agent' }));
+		this.container = parent;
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
-		this.windowContextKey().set(true);
-	}
-
-	override clearInput(): void {
-		this.windowContextKey().reset();
-		super.clearInput();
-	}
-
-	/** The context key of the window that shows this editor, which the window's top bar reads. */
-	private windowContextKey(): IContextKey<boolean> {
-		if (!this.inAgentsWindow) {
-			const part = this.editorGroupsService.getPart(this.group);
-			const windowContextKeyService = this.editorGroupsService.getScopedInstantiationService(part).invokeFunction(accessor => accessor.get(IContextKeyService));
-			this.inAgentsWindow = InNexusAgentsWindowContext.bindTo(windowContextKeyService);
+		// A chat belongs to one folder: a different folder gets a new chat.
+		if (input instanceof NexusAgentsEditorInput && this.container && !isEqual(this.widgetResource, input.resource)) {
+			this.widget.clear();
+			this.widget.value = this.instantiationService.createInstance(NexusChatWidget, this.container, { initialMode: 'agent', folder: input.folder });
+			this.widgetResource = input.resource;
+			if (this.lastHeight !== undefined) {
+				this.widget.value.layout(this.lastHeight);
+			}
 		}
-		return this.inAgentsWindow;
 	}
 
 	override layout(dimension: Dimension): void {
-		this.widget?.layout(dimension.height);
+		this.lastHeight = dimension.height;
+		this.widget.value?.layout(dimension.height);
 	}
 
 	override focus(): void {
 		super.focus();
-		this.widget?.focus();
+		this.widget.value?.focus();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
 		super.setEditorVisible(visible);
 		if (visible) {
-			void this.widget?.refreshProviders();
+			void this.widget.value?.refreshProviders();
 		}
 	}
 }
 
 /**
- * Opens the NexusIDE Agents window: a separate window that shows a chat in
- * Agent mode. When it is already open, it is brought to the front instead.
+ * Shows the Agents chat for `folder` in this window, and hides the side bars
+ * and the panel so the window looks like a chat window. They can be shown
+ * again with the usual buttons.
  */
-export async function openNexusAgentsWindow(accessor: ServicesAccessor): Promise<void> {
-	const editorService = accessor.get(IEditorService);
-	const hostService = accessor.get(IHostService);
-
-	const input = NexusAgentsEditorInput.instance;
-	const existing = editorService.findEditors(input.resource)[0];
-	const pane = await editorService.openEditor(input, { pinned: true }, existing?.groupId ?? AUX_WINDOW_GROUP);
-	if (pane) {
-		await hostService.focus(getWindowById(pane.group.windowId, true).window);
+export async function showNexusAgentsChat(editorService: IEditorService, layoutService: IWorkbenchLayoutService, folder: URI | undefined): Promise<void> {
+	await editorService.openEditor(new NexusAgentsEditorInput(nexusAgentsResource(folder)), { pinned: true });
+	for (const part of [Parts.SIDEBAR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART]) {
+		layoutService.setPartHidden(true, part);
 	}
 }
 
-/** Brings the main NexusIDE window, with the code, to the front. */
-export function showNexusIDEWindow(accessor: ServicesAccessor): Promise<void> {
-	return accessor.get(IHostService).focus(mainWindow);
+/** Keeps {@link InNexusAgentsWindowContext} true while this window has an Agents chat open. */
+export class NexusAgentsWindowContextContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'workbench.contrib.nexusAgentsWindowContext';
+
+	constructor(
+		@IEditorService editorService: IEditorService,
+		@IContextKeyService contextKeyService: IContextKeyService,
+	) {
+		super();
+		const inAgentsWindow = InNexusAgentsWindowContext.bindTo(contextKeyService);
+		const update = () => inAgentsWindow.set(editorService.editors.some(editor => editor instanceof NexusAgentsEditorInput));
+		update();
+		this._register(editorService.onDidEditorsChange(update));
+	}
 }

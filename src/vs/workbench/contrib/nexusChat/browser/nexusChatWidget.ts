@@ -8,7 +8,7 @@ import './media/nexusChat.css';
 import { $, addDisposableListener, append, clearNode, getWindow, reset, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -67,6 +67,14 @@ class MessageElements implements IDisposable {
 export interface INexusChatWidgetOptions {
 	/** The mode the chat starts in. Ask when not given. */
 	readonly initialMode?: AIExecutionMode;
+	/**
+	 * The folder the AI works in. When not given, the first folder of the
+	 * window's workspace is used and the workspace's trust decides whether the
+	 * chat can send. When given, the trust of this folder decides instead, which
+	 * lets a window without that folder open, such as the Agents window, work
+	 * on it.
+	 */
+	readonly folder?: URI;
 }
 
 /**
@@ -96,6 +104,8 @@ export class NexusChatWidget extends Disposable {
 	private readonly sendButton: Button;
 	private readonly notice: HTMLElement;
 	private readonly trustBanner: HTMLElement;
+	/** Whether {@link INexusChatWidgetOptions.folder} is trusted. False until it is known. */
+	private folderTrusted = false;
 	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
@@ -111,7 +121,7 @@ export class NexusChatWidget extends Disposable {
 
 	constructor(
 		container: HTMLElement,
-		options: INexusChatWidgetOptions,
+		private readonly options: INexusChatWidgetOptions,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IAIService private readonly aiService: IAIService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -126,6 +136,7 @@ export class NexusChatWidget extends Disposable {
 		this.model = this._register(instantiationService.createInstance(NexusChatModel));
 
 		const root = this.root = append(container, $('.nexus-chat'));
+		this._register(toDisposable(() => root.remove()));
 
 		const messageList = this.messageList = append(root, $('.nexus-chat-messages', { role: 'log', 'aria-live': 'polite', tabIndex: 0 }));
 		messageList.setAttribute('aria-label', localize('nexusChat.messages', "Chat messages"));
@@ -174,12 +185,19 @@ export class NexusChatWidget extends Disposable {
 		this.notice = append(inputArea, $('.nexus-chat-notice', { role: 'status' }));
 
 		const trustBanner = this.trustBanner = append(inputArea, $('.nexus-chat-trust', { role: 'status' }));
-		append(trustBanner, $('.nexus-chat-trust-text')).textContent = localize('nexusChat.untrusted', "This folder is in Restricted Mode, so the chat is turned off. A folder can include its own AI settings that run commands. Only trust folders whose author you trust.");
-		const trustButton = this._register(new Button(trustBanner, { ...defaultButtonStyles, small: true }));
-		trustButton.label = localize('nexusChat.trustFolder', "Trust This Folder…");
-		this._register(trustButton.onDidClick(() => void this.workspaceTrustRequestService.requestWorkspaceTrust({
-			message: localize('nexusChat.trustMessage', "NexusIDE Chat runs the AI in this folder. Trust the folder only if you trust its author, because its settings can run commands."),
-		})));
+		const trustText = append(trustBanner, $('.nexus-chat-trust-text'));
+		if (options.folder) {
+			// This window does not have the folder open, so it cannot change the
+			// folder's trust. That is decided in the window that has it open.
+			trustText.textContent = localize('nexusChat.folderUntrusted', "The folder {0} is not trusted, so the chat is turned off. A folder can include its own AI settings that run commands. To use the chat, open the folder in the IDE window and trust it there, but only if you trust its author.", options.folder.fsPath);
+		} else {
+			trustText.textContent = localize('nexusChat.untrusted', "This folder is in Restricted Mode, so the chat is turned off. A folder can include its own AI settings that run commands. Only trust folders whose author you trust.");
+			const trustButton = this._register(new Button(trustBanner, { ...defaultButtonStyles, small: true }));
+			trustButton.label = localize('nexusChat.trustFolder', "Trust This Folder…");
+			this._register(trustButton.onDidClick(() => void this.workspaceTrustRequestService.requestWorkspaceTrust({
+				message: localize('nexusChat.trustMessage', "NexusIDE Chat runs the AI in this folder. Trust the folder only if you trust its author, because its settings can run commands."),
+			})));
+		}
 
 		this.renderProviders();
 		this.renderMessages();
@@ -188,6 +206,10 @@ export class NexusChatWidget extends Disposable {
 
 		this._register(this.model.onDidChange(() => this.renderMessages()));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.updateTrustState()));
+		if (options.folder) {
+			this._register(this.workspaceTrustManagementService.onDidChangeTrustedFolders(() => void this.refreshTrust()));
+			void this.refreshTrust();
+		}
 	}
 
 	/** The root element of the chat, inside the container given to the constructor. */
@@ -214,10 +236,9 @@ export class NexusChatWidget extends Disposable {
 			return;
 		}
 		// Checked on every send, not only through the disabled button: the AI
-		// runs in the workspace folder, and an untrusted folder can carry
-		// settings that run commands.
-		if (!this.workspaceTrustManagementService.isWorkspaceTrusted()) {
-			this.updateTrustState();
+		// runs in the folder, and an untrusted folder can carry settings that
+		// run commands.
+		if (!await this.refreshTrust()) {
 			return;
 		}
 		if (!this.providersLoaded || !pickProvider(this.providers, this.selectedProviderId)) {
@@ -282,10 +303,33 @@ export class NexusChatWidget extends Disposable {
 		return PANEL_MODES.find(entry => entry.mode === value)?.mode ?? 'ask';
 	}
 
-	/** The first workspace folder on disk, which the provider uses as its working directory. */
+	/** The folder on disk that the provider uses as its working directory. */
 	private workingFolder(): URI | undefined {
-		const folder = this.workspaceContextService.getWorkspace().folders[0];
-		return folder?.uri.scheme === Schemas.file ? folder.uri : undefined;
+		const folder = this.options.folder ?? this.workspaceContextService.getWorkspace().folders[0]?.uri;
+		return folder?.scheme === Schemas.file ? folder : undefined;
+	}
+
+	/** Whether the chat may send: the trust of its folder, or of the workspace when it has no folder of its own. */
+	private isTrusted(): boolean {
+		return this.options.folder ? this.folderTrusted : this.workspaceTrustManagementService.isWorkspaceTrusted();
+	}
+
+	/** Reads the trust again, updates the banner and returns whether the chat may send. */
+	private async refreshTrust(): Promise<boolean> {
+		if (this.options.folder) {
+			let trusted = false;
+			try {
+				trusted = (await this.workspaceTrustManagementService.getUriTrustInfo(this.options.folder)).trusted;
+			} catch {
+				// Unknown trust is treated as untrusted.
+			}
+			if (this._store.isDisposed) {
+				return false;
+			}
+			this.folderTrusted = trusted;
+		}
+		this.updateTrustState();
+		return this.isTrusted();
 	}
 
 	/** The errors and warnings of the Problems panel inside `folder`, or `undefined` when there are none. */
@@ -465,12 +509,12 @@ export class NexusChatWidget extends Disposable {
 		this.sendButton.label = running ? localize('nexusChat.stop', "Stop") : localize('nexusChat.send', "Send");
 		this.sendButton.element.classList.toggle('running', running);
 		// Stop stays available so a reply can always be cancelled.
-		this.sendButton.enabled = running || this.workspaceTrustManagementService.isWorkspaceTrusted();
+		this.sendButton.enabled = running || this.isTrusted();
 	}
 
-	/** Shows the Restricted Mode banner and disables sending while the workspace is not trusted. */
+	/** Shows the Restricted Mode banner and disables sending while the folder is not trusted. */
 	private updateTrustState(): void {
-		const trusted = this.workspaceTrustManagementService.isWorkspaceTrusted();
+		const trusted = this.isTrusted();
 		this.trustBanner.style.display = trusted ? 'none' : 'flex';
 		if (!trusted && this.model.isRunning) {
 			void this.stop();

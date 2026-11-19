@@ -223,6 +223,7 @@ import './contrib/keybindings/electron-browser/systemWideKeybindings.contributio
 
 // NexusIDE Chat (needs the AI service, which only runs in the desktop app)
 import './contrib/nexusChat/browser/nexusChat.contribution.js';
+import './contrib/nexusChat/electron-browser/nexusAgentsWindow.contribution.js';
 
 //#endregion
 

@@ -4,144 +4,154 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { isIMenuItem, MenuId, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
+import { Emitter } from '../../../../../base/common/event.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { mock } from '../../../../../base/test/common/mock.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAIService } from '../../../../../platform/ai/common/ai.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
-import { ServiceCollection } from '../../../../../platform/instantiation/common/serviceCollection.js';
-import { IEditorPane, IEditorIdentifier } from '../../../../common/editor.js';
+import { IWorkspaceTrustManagementService, IWorkspaceTrustUriInfo } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
-import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
-import { AUX_WINDOW_GROUP, IEditorService, PreferredGroup } from '../../../../services/editor/common/editorService.js';
-import { IHostService } from '../../../../services/host/browser/host.js';
+import { GroupModelChangeKind } from '../../../../common/editor.js';
+import { IEditorService, IEditorsChangeEvent } from '../../../../services/editor/common/editorService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../services/layout/browser/layoutService.js';
 import { TestEditorGroupView, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
-import '../../browser/nexusChat.contribution.js';
-import { InNexusAgentsWindowContext, NexusAgentsEditorInput, NexusAgentsEditorPane, OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID, openNexusAgentsWindow, SHOW_NEXUS_IDE_WINDOW_COMMAND_ID, showNexusIDEWindow } from '../../browser/nexusAgentsEditor.js';
+import { InNexusAgentsWindowContext, NexusAgentsEditorInput, NexusAgentsEditorPane, NexusAgentsEditorSerializer, NexusAgentsWindowContextContribution, nexusAgentsFolder, nexusAgentsResource, showNexusAgentsChat } from '../../browser/nexusAgentsEditor.js';
 import { TestAIService } from '../common/testAIService.js';
 
 suite('NexusAgentsEditor', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	// The input is shared by the whole app. Each test disposes it at its end, so the next test starts fresh.
-	setup(() => {
-		store.add(NexusAgentsEditorInput.instance);
+	const project = URI.file('/home/user/My Project #1');
+
+	test('the folder of a chat survives turning its resource into text and back', () => {
+		const resource = URI.parse(nexusAgentsResource(project).toString(), true);
+		assert.strictEqual(nexusAgentsFolder(resource)?.toString(), project.toString());
+		assert.strictEqual(nexusAgentsFolder(nexusAgentsResource(undefined)), undefined);
+		assert.strictEqual(nexusAgentsFolder(URI.file('/home/user/a.ts')), undefined, 'only Agents chat resources have a folder');
 	});
 
-	test('there is one Agents window input, named NexusIDE Agents', () => {
-		const input = NexusAgentsEditorInput.instance;
-		assert.strictEqual(NexusAgentsEditorInput.instance, input, 'the same input is returned while it is alive');
-		assert.strictEqual(input.getName(), 'NexusIDE Agents');
-		assert.ok(input.matches(input));
-		assert.ok(!input.matches(store.add(new class extends EditorInput {
-			override get typeId() { return 'other'; }
-			override get resource() { return URI.file('/other.ts'); }
-		})), 'a different editor is not the Agents window');
+	test('the chat is restored after a restart with its folder', () => {
+		const serializer = new NexusAgentsEditorSerializer();
+		const input = store.add(new NexusAgentsEditorInput(nexusAgentsResource(project)));
+		const restored = serializer.deserialize(undefined!, serializer.serialize(input)!);
+		assert.ok(restored instanceof NexusAgentsEditorInput);
+		store.add(restored);
+		assert.strictEqual(restored.folder?.toString(), project.toString());
+		assert.ok(restored.matches(input));
+		assert.strictEqual(serializer.deserialize(undefined!, URI.file('/x').toString()), undefined, 'other resources are not restored as a chat');
 
-		input.dispose();
-		const next = store.add(NexusAgentsEditorInput.instance);
-		assert.notStrictEqual(next, input, 'a new input is created after the old one is closed');
+		const other = store.add(new NexusAgentsEditorInput(nexusAgentsResource(URI.file('/other'))));
+		assert.ok(!other.matches(input), 'a chat for another folder is a different editor');
 	});
 
-	test('the Agents window shows a chat that starts in Agent mode', async () => {
+	async function createPane(trustedFolders: readonly URI[]) {
 		const instantiationService = workbenchInstantiationService(undefined, store);
 		const aiService = store.add(new TestAIService());
 		aiService.providers = [{ id: 'claude-cli', displayName: 'Claude Code CLI', kind: 'cli', available: true }];
 		instantiationService.stub(IAIService, aiService);
+		instantiationService.stub(IWorkspaceTrustManagementService, 'getUriTrustInfo', async (uri: URI): Promise<IWorkspaceTrustUriInfo> =>
+			({ uri, trusted: trustedFolders.some(folder => folder.toString() === uri.toString()) }));
 
 		const pane = store.add(instantiationService.createInstance(NexusAgentsEditorPane, new TestEditorGroupView(0)));
 		const parent = document.createElement('div');
 		document.body.appendChild(parent);
 		store.add({ dispose: () => parent.remove() });
 		pane.create(parent);
-		await timeout(0);
 
-		const modeSelect = parent.querySelector<HTMLSelectElement>('.nexus-chat-select');
-		assert.strictEqual(modeSelect?.value, 'agent');
-		const input = parent.querySelector<HTMLTextAreaElement>('.nexus-chat-prompt');
-		assert.ok(input, 'the chat has a message box');
-		input.value = 'clean up';
-		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-		await timeout(0);
-		assert.deepStrictEqual(aiService.requests.map(request => request.mode), ['agent']);
+		const open = async (folder: URI | undefined) => {
+			const input = store.add(new NexusAgentsEditorInput(nexusAgentsResource(folder)));
+			await pane.setInput(input, undefined, {}, CancellationToken.None);
+			await timeout(0);
+		};
+		const send = async (text: string) => {
+			const input = parent.querySelector<HTMLTextAreaElement>('.nexus-chat-prompt')!;
+			input.value = text;
+			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+			await timeout(0);
+		};
+		const banner = () => {
+			const element = parent.querySelector<HTMLElement>('.nexus-chat-trust');
+			return element?.style.display === 'none' ? undefined : { text: element?.textContent, hasTrustButton: !!element?.querySelector('.monaco-button') };
+		};
+		return { aiService, parent, open, send, banner };
+	}
+
+	test('the chat starts in Agent mode and works in the folder it was opened for', async () => {
+		const { aiService, parent, open, send, banner } = await createPane([project]);
+		await open(project);
+
+		assert.strictEqual(parent.querySelector<HTMLSelectElement>('.nexus-chat-select')?.value, 'agent');
+		assert.strictEqual(banner(), undefined, 'the folder is trusted');
+		await send('clean up');
+		assert.deepStrictEqual(aiService.requests.map(request => ({ mode: request.mode, workingDirectory: request.workingDirectory })), [
+			{ mode: 'agent', workingDirectory: project.fsPath },
+		]);
 	});
 
-	suite('openNexusAgentsWindow', () => {
+	test('the chat sends nothing for a folder that is not trusted, and cannot trust it itself', async () => {
+		const { aiService, open, send, banner } = await createPane([]);
+		await open(project);
 
-		function setup(openIn: readonly IEditorIdentifier[]) {
-			const instantiationService = workbenchInstantiationService(undefined, store);
-			const opened: { readonly editor: unknown; readonly group: PreferredGroup | undefined }[] = [];
-			const focusedWindows: Window[] = [];
-			instantiationService.stub(IEditorService, 'findEditors', () => openIn);
-			instantiationService.stub(IEditorService, 'openEditor', async (editor: unknown, _options: unknown, group: PreferredGroup | undefined) => {
-				opened.push({ editor, group });
-				return { group: { windowId: mainWindow.vscodeWindowId } } as Partial<IEditorPane> as IEditorPane;
-			});
-			instantiationService.stub(IHostService, 'focus', async (targetWindow: Window) => {
-				focusedWindows.push(targetWindow);
-			});
-			return { run: () => instantiationService.invokeFunction(openNexusAgentsWindow), opened, focusedWindows };
-		}
-
-		test('opens the Agents window in a new window and brings it to the front', async () => {
-			const { run, opened, focusedWindows } = setup([]);
-			await run();
-			assert.deepStrictEqual(opened, [{ editor: NexusAgentsEditorInput.instance, group: AUX_WINDOW_GROUP }]);
-			assert.deepStrictEqual(focusedWindows, [mainWindow], 'the window that shows it is focused');
-		});
-
-		test('shows the open Agents window again instead of opening a second one', async () => {
-			const { run, opened } = setup([{ groupId: 7, editor: NexusAgentsEditorInput.instance }]);
-			await run();
-			assert.deepStrictEqual(opened, [{ editor: NexusAgentsEditorInput.instance, group: 7 }]);
-		});
-	});
-	test('the top bar shows Agent in the main window and IDE in the Agents window', () => {
-		const buttons = MenuRegistry.getMenuItems(MenuId.TitleBarAdjacentCenter)
-			.filter(isIMenuItem)
-			.filter(item => item.command.id === OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID || item.command.id === SHOW_NEXUS_IDE_WINDOW_COMMAND_ID);
-		const shownIn = (values: Record<string, unknown>) => buttons
-			.filter(item => item.when?.evaluate({ getValue: <T>(key: string) => values[key] as T }) ?? true)
-			.map(item => typeof item.command.title === 'string' ? item.command.title : item.command.title.value);
-
-		assert.deepStrictEqual(shownIn({}), ['Agent'], 'main window');
-		assert.deepStrictEqual(shownIn({ isAuxiliaryWindow: true, [InNexusAgentsWindowContext.key]: true }), ['IDE'], 'Agents window');
-		assert.deepStrictEqual(shownIn({ isAuxiliaryWindow: true }), [], 'another window that only shows editors');
+		const shown = banner();
+		assert.ok(shown?.text?.includes(project.fsPath), shown?.text ?? '');
+		assert.strictEqual(shown?.hasTrustButton, false, 'the folder is trusted in the IDE window, not here');
+		await send('clean up');
+		assert.strictEqual(aiService.requests.length, 0);
 	});
 
-	test('the Agents window marks its own window while it shows the chat', async () => {
-		const instantiationService = workbenchInstantiationService(undefined, store);
-		instantiationService.stub(IAIService, store.add(new TestAIService()));
-		// The window's own context: the Agents window sets its key here, not in the main window.
-		const windowContextKeyService = new MockContextKeyService();
-		const windowInstantiationService = instantiationService.createChild(new ServiceCollection([IContextKeyService, windowContextKeyService]));
-		store.add(windowInstantiationService);
-		instantiationService.stub(IEditorGroupsService, 'getPart', () => ({}));
-		instantiationService.stub(IEditorGroupsService, 'getScopedInstantiationService', () => windowInstantiationService);
+	test('a chat for another folder starts fresh', async () => {
+		const other = URI.file('/home/user/other');
+		const { aiService, parent, open, send } = await createPane([project, other]);
+		await open(project);
+		await send('hi');
+		aiService.hub.end(aiService.streamIds[0], 'completed');
+		assert.strictEqual(parent.querySelectorAll('.nexus-chat-message').length, 2);
 
-		const pane = store.add(instantiationService.createInstance(NexusAgentsEditorPane, new TestEditorGroupView(0)));
-		const parent = document.createElement('div');
-		pane.create(parent);
-		const inAgentsWindow = () => windowContextKeyService.getContextKeyValue(InNexusAgentsWindowContext.key);
+		await open(other);
+		assert.strictEqual(parent.querySelectorAll('.nexus-chat').length, 1, 'the old chat is removed');
+		assert.strictEqual(parent.querySelectorAll('.nexus-chat-message').length, 0);
+		await send('hello');
+		assert.strictEqual(aiService.requests.at(-1)?.workingDirectory, other.fsPath);
+	});
 
-		await pane.setInput(NexusAgentsEditorInput.instance, undefined, {}, CancellationToken.None);
+	test('showing the chat opens it for the folder and hides the side bars and the panel', async () => {
+		const opened: EditorInput[] = [];
+		const hidden: string[] = [];
+		const editorService = new class extends mock<IEditorService>() {
+			override openEditor = (async (editor: EditorInput) => {
+				opened.push(store.add(editor));
+				return undefined;
+			}) as IEditorService['openEditor'];
+		};
+		const layoutService = { setPartHidden: (isHidden: boolean, part: Parts) => isHidden && hidden.push(part) } as Partial<IWorkbenchLayoutService> as IWorkbenchLayoutService;
+
+		await showNexusAgentsChat(editorService, layoutService, project);
+		assert.deepStrictEqual(opened.map(editor => editor instanceof NexusAgentsEditorInput ? editor.folder?.toString() : 'other'), [project.toString()]);
+		assert.deepStrictEqual(hidden, [Parts.SIDEBAR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART]);
+	});
+
+	test('a window is an Agents window while it has an Agents chat open', () => {
+		const editors: EditorInput[] = [];
+		const onDidEditorsChange = store.add(new Emitter<IEditorsChangeEvent>());
+		const editorService = new class extends mock<IEditorService>() {
+			override get editors() { return editors; }
+			override readonly onDidEditorsChange = onDidEditorsChange.event;
+		};
+		const contextKeyService = new MockContextKeyService();
+		store.add(new NexusAgentsWindowContextContribution(editorService, contextKeyService as IContextKeyService));
+		const inAgentsWindow = () => contextKeyService.getContextKeyValue(InNexusAgentsWindowContext.key);
+
+		assert.strictEqual(inAgentsWindow(), false);
+		editors.push(store.add(new NexusAgentsEditorInput(nexusAgentsResource(project))));
+		onDidEditorsChange.fire({ groupId: 0, event: { kind: GroupModelChangeKind.EDITOR_OPEN } });
 		assert.strictEqual(inAgentsWindow(), true);
-		pane.clearInput();
-		assert.strictEqual(inAgentsWindow(), false, 'the key goes back to false when the chat is closed');
-	});
-
-	test('the IDE button brings the main window to the front', async () => {
-		const instantiationService = workbenchInstantiationService(undefined, store);
-		const focusedWindows: Window[] = [];
-		instantiationService.stub(IHostService, 'focus', async (targetWindow: Window) => {
-			focusedWindows.push(targetWindow);
-		});
-		await instantiationService.invokeFunction(showNexusIDEWindow);
-		assert.deepStrictEqual(focusedWindows, [mainWindow]);
+		editors.length = 0;
+		onDidEditorsChange.fire({ groupId: 0, event: { kind: GroupModelChangeKind.EDITOR_CLOSE } });
+		assert.strictEqual(inAgentsWindow(), false);
 	});
 });
