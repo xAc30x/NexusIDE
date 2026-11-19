@@ -48,7 +48,7 @@ export class NexusChatViewPane extends ViewPane {
 
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
-		this.widget = this._register(this.instantiationService.createInstance(NexusChatWidget, container));
+		this.widget = this._register(this.instantiationService.createInstance(NexusChatWidget, container, {}));
 	}
 
 	protected override layoutBody(height: number, width: number): void {

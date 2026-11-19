@@ -6,14 +6,17 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { ViewAction } from '../../../browser/parts/views/viewPane.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
+import { EditorExtensions } from '../../../common/editor.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
+import { NEXUS_AGENTS_EDITOR_ID, NexusAgentsEditorInput, OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID, NexusAgentsEditorPane, openNexusAgentsWindow } from './nexusAgentsEditor.js';
 import { NEXUS_CHAT_VIEW_CONTAINER_ID, NEXUS_CHAT_VIEW_ID, NexusChatViewPane } from './nexusChatView.js';
 import '../common/nexusChatConfiguration.js';
 
@@ -62,5 +65,27 @@ registerAction2(class NewNexusChatAction extends ViewAction<NexusChatViewPane> {
 
 	runInView(_accessor: ServicesAccessor, view: NexusChatViewPane): void {
 		view.newChat();
+	}
+});
+
+// The NexusIDE Agents window: a separate window with a chat that starts in Agent mode.
+
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(NexusAgentsEditorPane, NEXUS_AGENTS_EDITOR_ID, localize('nexusAgents.editor', "NexusIDE Agents")),
+	[new SyncDescriptor(NexusAgentsEditorInput)]
+);
+
+registerAction2(class OpenNexusAgentsWindowAction extends Action2 {
+	constructor() {
+		super({
+			id: OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID,
+			title: localize2('nexusAgents.open', "Open Agents Window"),
+			category: localize2('nexusChat.category', "NexusIDE"),
+			f1: true,
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		return openNexusAgentsWindow(accessor);
 	}
 });

@@ -64,6 +64,11 @@ class MessageElements implements IDisposable {
 	}
 }
 
+export interface INexusChatWidgetOptions {
+	/** The mode the chat starts in. Ask when not given. */
+	readonly initialMode?: AIExecutionMode;
+}
+
 /**
  * The NexusIDE chat: a message list, a prompt box, mode and provider pickers
  * and a Send/Stop button. Replies are rendered as markdown; their code blocks
@@ -106,6 +111,7 @@ export class NexusChatWidget extends Disposable {
 
 	constructor(
 		container: HTMLElement,
+		options: INexusChatWidgetOptions,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IAIService private readonly aiService: IAIService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -147,6 +153,7 @@ export class NexusChatWidget extends Disposable {
 			option.value = mode;
 			option.textContent = label;
 		}
+		modeSelect.value = options.initialMode ?? 'ask';
 
 		const providerSelect = this.providerSelect = append(controls, $('select.nexus-chat-select.nexus-chat-provider')) as HTMLSelectElement;
 		providerSelect.setAttribute('aria-label', localize('nexusChat.providerLabel', "AI provider"));
