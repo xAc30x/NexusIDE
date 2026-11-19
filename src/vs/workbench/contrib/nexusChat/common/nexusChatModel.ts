@@ -128,6 +128,37 @@ export class NexusChatModel extends Disposable {
 		return this.active !== undefined;
 	}
 
+	/** Text of the chat, for the copy kept in application storage. The model itself is not that store. */
+	capture(): { readonly threadId: string; readonly messages: readonly { readonly role: NexusChatRole; readonly text: string }[] } {
+		return {
+			threadId: this._threadId,
+			messages: this._messages.map(message => ({ role: message.role, text: message.text })),
+		};
+	}
+
+	/**
+	 * Replaces the chat with a saved copy. Does nothing while a reply is running,
+	 * so a live turn is not overwritten by an older copy.
+	 */
+	restore(threadId: string, messages: readonly { readonly role: NexusChatRole; readonly text: string }[]): boolean {
+		if (this.active) {
+			return false;
+		}
+		this._threadId = threadId;
+		this._messages.length = 0;
+		for (const message of messages) {
+			this._messages.push({
+				id: generateUuid(),
+				role: message.role,
+				text: message.text,
+				parts: [{ kind: 'text', text: message.text }],
+				state: 'completed',
+			});
+		}
+		this._onDidChange.fire();
+		return true;
+	}
+
 	/**
 	 * Adds the prompt and an empty reply, then starts the run. Fails without
 	 * changing the chat if the prompt is empty or a reply is still running.

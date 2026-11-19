@@ -24,7 +24,7 @@ import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
-import { NexusChatWidget } from './nexusChatWidget.js';
+import { NexusAgentsShell } from './nexusAgentsShell.js';
 
 export const NEXUS_AGENTS_EDITOR_ID = 'workbench.editor.nexusAgents';
 export const NEXUS_AGENTS_SCHEME = 'nexus-agents';
@@ -120,12 +120,10 @@ export class NexusAgentsEditorSerializer implements IEditorSerializer {
 	}
 }
 
-/** Shows a NexusIDE chat that starts in Agent mode and works in the folder of its input. */
+/** The Agents window: one list of conversations, Projects, and Automations. */
 export class NexusAgentsEditorPane extends EditorPane {
 
-	private container: HTMLElement | undefined;
-	private readonly widget = this._register(new MutableDisposable<NexusChatWidget>());
-	private widgetResource: URI | undefined;
+	private readonly shell = this._register(new MutableDisposable<NexusAgentsShell>());
 	private lastHeight: number | undefined;
 
 	constructor(
@@ -139,36 +137,36 @@ export class NexusAgentsEditorPane extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		this.container = parent;
+		this.shell.value = this.instantiationService.createInstance(NexusAgentsShell, parent);
+		if (this.lastHeight !== undefined) {
+			this.shell.value.layout(this.lastHeight);
+		}
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
-		// A chat belongs to one folder: a different folder gets a new chat.
-		if (input instanceof NexusAgentsEditorInput && this.container && !isEqual(this.widgetResource, input.resource)) {
-			this.widget.clear();
-			this.widget.value = this.instantiationService.createInstance(NexusChatWidget, this.container, { initialMode: 'agent', folder: input.folder });
-			this.widgetResource = input.resource;
+		if (input instanceof NexusAgentsEditorInput) {
+			this.shell.value?.show(input.folder);
 			if (this.lastHeight !== undefined) {
-				this.widget.value.layout(this.lastHeight);
+				this.shell.value?.layout(this.lastHeight);
 			}
 		}
 	}
 
 	override layout(dimension: Dimension): void {
 		this.lastHeight = dimension.height;
-		this.widget.value?.layout(dimension.height);
+		this.shell.value?.layout(dimension.height);
 	}
 
 	override focus(): void {
 		super.focus();
-		this.widget.value?.focus();
+		this.shell.value?.focus();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
 		super.setEditorVisible(visible);
 		if (visible) {
-			void this.widget.value?.refreshProviders();
+			this.shell.value?.refresh();
 		}
 	}
 }

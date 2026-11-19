@@ -8,6 +8,7 @@ import './media/nexusChat.css';
 import { $, addDisposableListener, append, clearNode, getWindow, reset, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -77,6 +78,16 @@ export interface INexusChatWidgetOptions {
 	readonly folder?: URI;
 }
 
+/** A saved local chat, including a follow-up that is waiting for the current turn. */
+export interface INexusChatTranscript {
+	readonly threadId: string;
+	readonly messages: readonly { readonly role: 'user' | 'assistant'; readonly text: string }[];
+	readonly running: boolean;
+	readonly pendingApproval: boolean;
+	readonly queued: readonly string[];
+	readonly steer?: string;
+}
+
 /**
  * The NexusIDE chat: a message list, a prompt box, mode and provider pickers
  * and a Send/Stop button. Replies are rendered as markdown; their code blocks
@@ -109,6 +120,15 @@ export class NexusChatWidget extends Disposable {
 	private readonly messageElements = this._register(new DisposableMap<string, MessageElements>());
 	/** Permission requests whose answer is being sent, so their buttons stay disabled. */
 	private readonly answering = new Set<string>();
+	/** Follow-ups waiting for the current turn to finish. */
+	private queued: string[] = [];
+	/** Sent ahead of {@link queued} once the turn ends. The local CLI has no mid-turn channel. */
+	private steer: string | undefined;
+	private flushing = false;
+	private restoring = false;
+	private readonly _onDidChangeConversation = this._register(new Emitter<void>());
+	/** Fires when the transcript, the queue, or the steer changes. */
+	readonly onDidChangeConversation = this._onDidChangeConversation.event;
 	private readonly codeBlockRenderer: NexusChatCodeBlockRenderer;
 	private readonly previews: NexusChatPreviews;
 	private readonly codeBlockHost: INexusChatCodeBlockHost = {
@@ -146,12 +166,12 @@ export class NexusChatWidget extends Disposable {
 		const inputArea = append(root, $('.nexus-chat-input'));
 		const input = this.input = append(inputArea, $('textarea.nexus-chat-prompt')) as HTMLTextAreaElement;
 		input.rows = 3;
-		input.placeholder = localize('nexusChat.placeholder', "Message (Enter to send, Shift+Enter for a new line)");
+		input.placeholder = localize('nexusChat.placeholder', "Message (Enter to send, Ctrl+Enter to steer the current turn, Shift+Enter for a new line)");
 		input.setAttribute('aria-label', localize('nexusChat.prompt', "Chat message"));
 		this._register(addDisposableListener(input, 'keydown', (e: KeyboardEvent) => {
 			if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 				e.preventDefault();
-				void this.submit();
+				this.onEnter(e.ctrlKey || e.metaKey);
 			}
 		}));
 
@@ -189,7 +209,7 @@ export class NexusChatWidget extends Disposable {
 		if (options.folder) {
 			// This window does not have the folder open, so it cannot change the
 			// folder's trust. That is decided in the window that has it open.
-			trustText.textContent = localize('nexusChat.folderUntrusted', "The folder {0} is not trusted, so the chat is turned off. A folder can include its own AI settings that run commands. To use the chat, open the folder in the IDE window and trust it there, but only if you trust its author.", options.folder.fsPath);
+			trustText.textContent = localize('nexusChat.folderUntrusted', "The folder {0} is not trusted, so the chat is turned off. A folder can include its own AI settings that run commands. Trust it in this window only if you trust its author.", options.folder.fsPath);
 		} else {
 			trustText.textContent = localize('nexusChat.untrusted', "This folder is in Restricted Mode, so the chat is turned off. A folder can include its own AI settings that run commands. Only trust folders whose author you trust.");
 			const trustButton = this._register(new Button(trustBanner, { ...defaultButtonStyles, small: true }));
@@ -204,7 +224,13 @@ export class NexusChatWidget extends Disposable {
 		this.updateTrustState();
 		void this.refreshProviders();
 
-		this._register(this.model.onDidChange(() => this.renderMessages()));
+		this._register(this.model.onDidChange(() => {
+			this.renderMessages();
+			if (!this.restoring) {
+				this._onDidChangeConversation.fire();
+				void this.flushFollowUps();
+			}
+		}));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.updateTrustState()));
 		if (options.folder) {
 			this._register(this.workspaceTrustManagementService.onDidChangeTrustedFolders(() => void this.refreshTrust()));
@@ -227,8 +253,91 @@ export class NexusChatWidget extends Disposable {
 
 	/** Starts a new, empty chat. A running reply is cancelled. */
 	newChat(): void {
+		this.queued = [];
+		this.steer = undefined;
 		this.model.clear();
 		this.showNotice(undefined);
+	}
+
+	/** The chat as it should be saved, including a follow-up that is still waiting. */
+	captureTranscript(): INexusChatTranscript {
+		const captured = this.model.capture();
+		return {
+			threadId: captured.threadId,
+			messages: captured.messages,
+			running: this.model.isRunning,
+			pendingApproval: this.hasPendingApproval(),
+			queued: this.queued.slice(),
+			...(this.steer !== undefined ? { steer: this.steer } : {}),
+		};
+	}
+
+	/**
+	 * Shows a saved chat. A follow-up that was waiting is kept and sent only
+	 * after this call, once no turn is running.
+	 */
+	restoreTranscript(transcript: INexusChatTranscript): void {
+		this.restoring = true;
+		try {
+			this.queued = transcript.queued.slice();
+			this.steer = transcript.steer;
+			this.model.restore(transcript.threadId, transcript.messages);
+		} finally {
+			this.restoring = false;
+		}
+	}
+
+	/** Sends a steer or queued follow-up once the turn is over. */
+	deliverWaiting(): Promise<void> {
+		return this.flushFollowUps();
+	}
+
+	private onEnter(steer: boolean): void {
+		const text = this.input.value;
+		if (text.trim().length === 0) {
+			return;
+		}
+		// A normal follow-up waits. Ctrl/Cmd+Enter steers, and it is delivered
+		// ahead of the queue when the turn ends. The local CLI cannot take it
+		// in the middle of a turn, and an approval is part of that turn.
+		if (this.model.isRunning) {
+			this.input.value = '';
+			if (steer) {
+				this.steer = text;
+			} else {
+				this.queued.push(text);
+			}
+			this._onDidChangeConversation.fire();
+			return;
+		}
+		void this.submit();
+	}
+
+	private hasPendingApproval(): boolean {
+		return this.model.messages.some(message => message.parts.some(part => part.kind === 'permission' && part.state === 'pending'));
+	}
+
+	/** Sends the steer, then each queued message, one turn at a time. */
+	private async flushFollowUps(): Promise<void> {
+		// An approval is part of the running turn, so the steer stays queued until
+		// that turn ends. The local CLI has no channel for it before then.
+		if (this.flushing || this.restoring || this.model.isRunning) {
+			return;
+		}
+		const next = this.steer ?? this.queued.shift();
+		if (this.steer !== undefined && next === this.steer) {
+			this.steer = undefined;
+		}
+		if (next === undefined) {
+			return;
+		}
+		this.flushing = true;
+		try {
+			this.input.value = next;
+			await this.submit();
+		} finally {
+			this.flushing = false;
+		}
 	}
 
 	private async submit(): Promise<void> {
