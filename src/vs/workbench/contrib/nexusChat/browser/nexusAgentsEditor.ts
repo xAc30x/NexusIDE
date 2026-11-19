@@ -4,25 +4,36 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Dimension, getWindowById } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
-import { EditorInputCapabilities, IUntypedEditorInput } from '../../../common/editor.js';
+import { EditorInputCapabilities, IEditorOpenContext, IUntypedEditorInput } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { AUX_WINDOW_GROUP, IEditorService } from '../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { NexusChatWidget } from './nexusChatWidget.js';
 
 export const NEXUS_AGENTS_EDITOR_ID = 'workbench.editor.nexusAgents';
 export const OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID = 'nexusChat.openAgentsWindow';
+export const SHOW_NEXUS_IDE_WINDOW_COMMAND_ID = 'nexusChat.showIDEWindow';
+
+/**
+ * True in a window that shows the NexusIDE Agents window. It is set on that
+ * window's own context, so the top bar of each window can show its own button.
+ */
+export const InNexusAgentsWindowContext = new RawContextKey<boolean>('nexusAgentsWindow', false, localize('nexusAgents.inWindow', "Whether the window shows the NexusIDE Agents window."));
 
 const nexusAgentsIcon = registerIcon('nexus-agents-editor-icon', Codicon.robot, localize('nexusAgents.icon', "Icon of the NexusIDE Agents window."));
 
@@ -74,6 +85,7 @@ export class NexusAgentsEditorInput extends EditorInput {
 export class NexusAgentsEditorPane extends EditorPane {
 
 	private widget: NexusChatWidget | undefined;
+	private inAgentsWindow: IContextKey<boolean> | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -81,12 +93,33 @@ export class NexusAgentsEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super(NEXUS_AGENTS_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
 		this.widget = this._register(this.instantiationService.createInstance(NexusChatWidget, parent, { initialMode: 'agent' }));
+	}
+
+	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		await super.setInput(input, options, context, token);
+		this.windowContextKey().set(true);
+	}
+
+	override clearInput(): void {
+		this.windowContextKey().reset();
+		super.clearInput();
+	}
+
+	/** The context key of the window that shows this editor, which the window's top bar reads. */
+	private windowContextKey(): IContextKey<boolean> {
+		if (!this.inAgentsWindow) {
+			const part = this.editorGroupsService.getPart(this.group);
+			const windowContextKeyService = this.editorGroupsService.getScopedInstantiationService(part).invokeFunction(accessor => accessor.get(IContextKeyService));
+			this.inAgentsWindow = InNexusAgentsWindowContext.bindTo(windowContextKeyService);
+		}
+		return this.inAgentsWindow;
 	}
 
 	override layout(dimension: Dimension): void {
@@ -120,4 +153,9 @@ export async function openNexusAgentsWindow(accessor: ServicesAccessor): Promise
 	if (pane) {
 		await hostService.focus(getWindowById(pane.group.windowId, true).window);
 	}
+}
+
+/** Brings the main NexusIDE window, with the code, to the front. */
+export function showNexusIDEWindow(accessor: ServicesAccessor): Promise<void> {
+	return accessor.get(IHostService).focus(mainWindow);
 }

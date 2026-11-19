@@ -6,7 +6,7 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -14,9 +14,10 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { ViewAction } from '../../../browser/parts/views/viewPane.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
+import { IsAuxiliaryWindowContext } from '../../../common/contextkeys.js';
 import { EditorExtensions } from '../../../common/editor.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
-import { NEXUS_AGENTS_EDITOR_ID, NexusAgentsEditorInput, OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID, NexusAgentsEditorPane, openNexusAgentsWindow } from './nexusAgentsEditor.js';
+import { InNexusAgentsWindowContext, NEXUS_AGENTS_EDITOR_ID, NexusAgentsEditorInput, NexusAgentsEditorPane, OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID, openNexusAgentsWindow, SHOW_NEXUS_IDE_WINDOW_COMMAND_ID, showNexusIDEWindow } from './nexusAgentsEditor.js';
 import { NEXUS_CHAT_VIEW_CONTAINER_ID, NEXUS_CHAT_VIEW_ID, NexusChatViewPane } from './nexusChatView.js';
 import '../common/nexusChatConfiguration.js';
 
@@ -88,4 +89,44 @@ registerAction2(class OpenNexusAgentsWindowAction extends Action2 {
 	run(accessor: ServicesAccessor): Promise<void> {
 		return openNexusAgentsWindow(accessor);
 	}
+});
+
+registerAction2(class ShowNexusIDEWindowAction extends Action2 {
+	constructor() {
+		super({
+			id: SHOW_NEXUS_IDE_WINDOW_COMMAND_ID,
+			title: localize2('nexusAgents.showIDE', "Go to IDE Window"),
+			category: localize2('nexusChat.category', "NexusIDE"),
+			f1: true,
+			precondition: InNexusAgentsWindowContext,
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		return showNexusIDEWindow(accessor);
+	}
+});
+
+// Top bar buttons. Each window evaluates them with its own context: the main
+// window shows "Agent", the Agents window shows "IDE", and other windows that
+// only show editors show neither.
+
+MenuRegistry.appendMenuItem(MenuId.TitleBarAdjacentCenter, {
+	command: {
+		id: OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID,
+		title: localize('nexusAgents.agentButton', "Agent"),
+		tooltip: localize('nexusAgents.agentButtonTooltip', "Open the NexusIDE Agents window"),
+	},
+	when: IsAuxiliaryWindowContext.toNegated(),
+	order: -1000,
+});
+
+MenuRegistry.appendMenuItem(MenuId.TitleBarAdjacentCenter, {
+	command: {
+		id: SHOW_NEXUS_IDE_WINDOW_COMMAND_ID,
+		title: localize('nexusAgents.ideButton', "IDE"),
+		tooltip: localize('nexusAgents.ideButtonTooltip', "Go back to the NexusIDE window with your code"),
+	},
+	when: ContextKeyExpr.and(IsAuxiliaryWindowContext, InNexusAgentsWindowContext),
+	order: -1000,
 });

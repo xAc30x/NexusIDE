@@ -8,13 +8,20 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { isIMenuItem, MenuId, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { IAIService } from '../../../../../platform/ai/common/ai.js';
+import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
+import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
+import { ServiceCollection } from '../../../../../platform/instantiation/common/serviceCollection.js';
 import { IEditorPane, IEditorIdentifier } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
+import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
 import { AUX_WINDOW_GROUP, IEditorService, PreferredGroup } from '../../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../../services/host/browser/host.js';
 import { TestEditorGroupView, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
-import { NexusAgentsEditorInput, NexusAgentsEditorPane, openNexusAgentsWindow } from '../../browser/nexusAgentsEditor.js';
+import '../../browser/nexusChat.contribution.js';
+import { InNexusAgentsWindowContext, NexusAgentsEditorInput, NexusAgentsEditorPane, OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID, openNexusAgentsWindow, SHOW_NEXUS_IDE_WINDOW_COMMAND_ID, showNexusIDEWindow } from '../../browser/nexusAgentsEditor.js';
 import { TestAIService } from '../common/testAIService.js';
 
 suite('NexusAgentsEditor', () => {
@@ -93,5 +100,48 @@ suite('NexusAgentsEditor', () => {
 			await run();
 			assert.deepStrictEqual(opened, [{ editor: NexusAgentsEditorInput.instance, group: 7 }]);
 		});
+	});
+	test('the top bar shows Agent in the main window and IDE in the Agents window', () => {
+		const buttons = MenuRegistry.getMenuItems(MenuId.TitleBarAdjacentCenter)
+			.filter(isIMenuItem)
+			.filter(item => item.command.id === OPEN_NEXUS_AGENTS_WINDOW_COMMAND_ID || item.command.id === SHOW_NEXUS_IDE_WINDOW_COMMAND_ID);
+		const shownIn = (values: Record<string, unknown>) => buttons
+			.filter(item => item.when?.evaluate({ getValue: <T>(key: string) => values[key] as T }) ?? true)
+			.map(item => typeof item.command.title === 'string' ? item.command.title : item.command.title.value);
+
+		assert.deepStrictEqual(shownIn({}), ['Agent'], 'main window');
+		assert.deepStrictEqual(shownIn({ isAuxiliaryWindow: true, [InNexusAgentsWindowContext.key]: true }), ['IDE'], 'Agents window');
+		assert.deepStrictEqual(shownIn({ isAuxiliaryWindow: true }), [], 'another window that only shows editors');
+	});
+
+	test('the Agents window marks its own window while it shows the chat', async () => {
+		const instantiationService = workbenchInstantiationService(undefined, store);
+		instantiationService.stub(IAIService, store.add(new TestAIService()));
+		// The window's own context: the Agents window sets its key here, not in the main window.
+		const windowContextKeyService = new MockContextKeyService();
+		const windowInstantiationService = instantiationService.createChild(new ServiceCollection([IContextKeyService, windowContextKeyService]));
+		store.add(windowInstantiationService);
+		instantiationService.stub(IEditorGroupsService, 'getPart', () => ({}));
+		instantiationService.stub(IEditorGroupsService, 'getScopedInstantiationService', () => windowInstantiationService);
+
+		const pane = store.add(instantiationService.createInstance(NexusAgentsEditorPane, new TestEditorGroupView(0)));
+		const parent = document.createElement('div');
+		pane.create(parent);
+		const inAgentsWindow = () => windowContextKeyService.getContextKeyValue(InNexusAgentsWindowContext.key);
+
+		await pane.setInput(NexusAgentsEditorInput.instance, undefined, {}, CancellationToken.None);
+		assert.strictEqual(inAgentsWindow(), true);
+		pane.clearInput();
+		assert.strictEqual(inAgentsWindow(), false, 'the key goes back to false when the chat is closed');
+	});
+
+	test('the IDE button brings the main window to the front', async () => {
+		const instantiationService = workbenchInstantiationService(undefined, store);
+		const focusedWindows: Window[] = [];
+		instantiationService.stub(IHostService, 'focus', async (targetWindow: Window) => {
+			focusedWindows.push(targetWindow);
+		});
+		await instantiationService.invokeFunction(showNexusIDEWindow);
+		assert.deepStrictEqual(focusedWindows, [mainWindow]);
 	});
 });
