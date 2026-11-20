@@ -18,7 +18,7 @@ import { getChatSessionType, getNewChatSessionResource } from './model/chatUri.j
 import { clearUserSelectedSessionType, getRememberedSessionType, storeUserSelectedSessionType } from './chatSessionTypePreference.js';
 import { IAgentHostEnablementService } from '../../../../platform/agentHost/common/agentHostEnablementService.js';
 import { LOCAL_AGENT_HOST_SCHEME_PREFIX } from '../../../../platform/agentHost/common/agentHostConnectionsService.js';
-import { isLocalAgentHostProviderDisabledByPolicy } from '../../../../platform/agentHost/common/agentService.js';
+import { AgentHostClaudeAgentEnabledSettingId, isLocalAgentHostProviderDisabledByPolicy } from '../../../../platform/agentHost/common/agentService.js';
 import { requiresCopilotAgentHost, IManagedSettingsService, isTemporaryDefaultToLocalHarnessEnabled } from '../../../../platform/policy/common/copilotManagedSettings.js';
 import { localize } from '../../../../nls.js';
 
@@ -470,9 +470,10 @@ export function isSupportedChatFileScheme(accessor: ServicesAccessor, scheme: st
  * Returns the effective default session type for a new chat in the VS Code
  * editor window.
  *
- * When the agent host is enabled and either `chat.defaultToCopilotHarness` is enabled or the
- * agent sandbox is enforced by policy, Agent Host Copilot CLI is the default. It falls back to
- * the local harness when enabled, or to the first visible non-local provider.
+ * A local folder whose Claude provider is registered defaults to Agent Host Claude.
+ * Managed policy that requires Copilot, an enforced sandbox, and virtual workspaces
+ * stay on Agent Host Copilot. When Claude is not registered, `chat.defaultToCopilotHarness`
+ * or an enforced sandbox selects Copilot, then the local harness, then the first visible provider.
  */
 export function getComputedDefaultSessionType(
 	configurationService: IConfigurationService,
@@ -484,6 +485,10 @@ export function getComputedDefaultSessionType(
 ): string {
 	if (managedPolicyRequiresAgentHost) {
 		return SessionType.AgentHostCopilot;
+	}
+
+	if (isClaudeHarnessDefault(configurationService, chatSessionsService, workspace, agentHostEnabled, managedSandboxEnforced)) {
+		return SessionType.AgentHostClaude;
 	}
 
 	if (agentHostEnabled && isCopilotHarnessDefault(configurationService, managedSandboxEnforced)) {
@@ -685,6 +690,32 @@ export function recordUserSelectedSessionType(
 	} else {
 		storeUserSelectedSessionType(storageService, sessionType);
 	}
+}
+
+/**
+ * Whether a new chat in a local folder should open Agent Host Claude.
+ *
+ * Claude must be enabled, not disabled by policy, and registered by the agent host
+ * (the SDK is reachable). An enforced sandbox, the temporary Local escape hatch,
+ * and virtual workspaces keep the previous Copilot or Local default.
+ */
+function isClaudeHarnessDefault(
+	configurationService: IConfigurationService,
+	chatSessionsService: Pick<IChatSessionsService, 'getChatSessionContribution'>,
+	workspace: IWorkspace,
+	agentHostEnabled: boolean,
+	managedSandboxEnforced: boolean,
+): boolean {
+	if (!agentHostEnabled || managedSandboxEnforced || isVirtualWorkspace(workspace) || isTemporaryDefaultToLocalHarnessEnabled(configurationService)) {
+		return false;
+	}
+	if (configurationService.getValue<boolean>(AgentHostClaudeAgentEnabledSettingId) === false) {
+		return false;
+	}
+	if (isLocalAgentHostSessionTypeDisabledByPolicy(SessionType.AgentHostClaude, configurationService)) {
+		return false;
+	}
+	return !!chatSessionsService.getChatSessionContribution(SessionType.AgentHostClaude);
 }
 
 /**
