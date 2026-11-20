@@ -28,7 +28,7 @@ import { ILogService } from '../../../log/common/log.js';
 import { IProductService } from '../../../product/common/productService.js';
 import { ITelemetryService } from '../../../telemetry/common/telemetry.js';
 import { IAgentHostStartupPerformance } from '../agentHostStartupPerformance.js';
-import { createSchema, platformRootSchema, platformSessionSchema, schemaProperty, AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostGitHubMcpServerEnabledConfigKey, AgentHostMcpServersConfigKey, AgentHostWorkspaceTrustConfigKey, type ISchemaProperty, type SessionMode } from '../../common/agentHostSchema.js';
+import { createSchema, platformRootSchema, platformSessionSchema, schemaProperty, AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostGitHubMcpServerEnabledConfigKey, AgentHostMcpServersConfigKey, AgentHostWorkspaceTrustConfigKey, InstantGrepIndexRepositoriesConfigKey, type ISchemaProperty, type SessionMode } from '../../common/agentHostSchema.js';
 import { isAgentHostWorkspaceTrusted } from '../../common/agentHostWorkspaceTrust.js';
 import { createPricingMetaFromBilling, normalizeCAPIBilling, type ICAPIModelBilling } from '../../common/meta/agentModelMeta.js';
 import { ContextSizeConfigKey, createContextSizeConfigSchemaProperty, createContextSizeConfigSchemaPropertyFromLimits, getModelContextSize } from '../../common/agentModelConfiguration.js';
@@ -78,6 +78,8 @@ import { IAgentHostProxyResolver } from '../agentHostProxyResolver.js';
 import { MODEL_REFRESH_BASE_DELAY_MS, MODEL_REFRESH_MAX_ATTEMPTS, MODEL_REFRESH_MAX_DELAY_MS, modelRefreshBackoff } from '../shared/modelRefreshRetry.js';
 import { AGENT_HOST_WORKSPACELESS_INSTRUCTIONS } from '../shared/workspacelessInstructions.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
+import { dispatchInstantGrep, getSharedInstantGrepHost, instantGrepKind, instantGrepRequestFromRecord, isInstantGrepToolName } from '../instantGrep/instantGrepHost.js';
+import { instantGrepToolDefinitions } from '../instantGrep/instantGrepToolDefinitions.js';
 import { IAgentHostCheckpointService } from '../../common/agentHostCheckpointService.js';
 import { ISessionDataService, MAX_TERMINAL_OUTPUT_BYTES } from '../../common/sessionDataService.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
@@ -3011,7 +3013,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		// (the agent host owns those names) and matches the routing order below.
 		const seen = new Set<string>();
 		const all: ToolDefinition[] = [];
-		for (const t of [...serverTools, ...clientTools]) {
+		for (const t of [...instantGrepToolDefinitions, ...serverTools, ...clientTools]) {
 			if (seen.has(t.name)) {
 				continue;
 			}
@@ -3040,6 +3042,15 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (session.agentMergeTurn && isGitHubMcpToolName(params.tool)) {
 			this._logService.warn(`[Codex:${session.sessionId}] Denying restricted Agent Merge tool: ${params.tool}`);
 			return { result: this._toolFailure(AGENT_MERGE_GITHUB_TOOL_RESTRICTION) };
+		}
+		if (params.namespace === null && isInstantGrepToolName(params.tool)) {
+			const directories = this._workingDirectories(session).filter(directory => directory.scheme === Schemas.file);
+			const trust = this._configurationService.getRootValue(platformRootSchema, AgentHostWorkspaceTrustConfigKey);
+			const enabled = this._configurationService.getRootValue(platformRootSchema, InstantGrepIndexRepositoriesConfigKey) !== false;
+			const restricted = directories[0] ? !isAgentHostWorkspaceTrusted(directories[0], trust) : false;
+			const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments as Record<string, unknown> : {};
+			const result = await dispatchInstantGrep(getSharedInstantGrepHost(), instantGrepRequestFromRecord(instantGrepKind(params.tool), directories.map(directory => directory.fsPath), args, enabled, restricted));
+			return { result: { contentItems: [{ type: 'inputText', text: result.text }], success: true } };
 		}
 		// Server tools are executed in-process against the session's own state
 		// (no workbench round-trip). We register them under their bare name, so

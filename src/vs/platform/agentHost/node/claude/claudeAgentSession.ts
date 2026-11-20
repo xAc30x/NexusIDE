@@ -55,7 +55,9 @@ import { ClaudeSdkPipeline, IRematerializer, type ISdkResolvedCustomizations } f
 import { SubagentRegistry } from './claudeSubagentRegistry.js';
 import { getSdkMcpServerEnablement, isCustomizationSdkEligible, resolveCustomizationEnablement } from '../shared/customizationEnablementGate.js';
 import { McpServerType, type IMcpServerConfiguration } from '../../../mcp/common/mcpPlatformTypes.js';
-import { AgentHostGitHubMcpServerEnabledConfigKey, platformRootSchema } from '../../common/agentHostSchema.js';
+import { AgentHostGitHubMcpServerEnabledConfigKey, AgentHostWorkspaceTrustConfigKey, InstantGrepIndexRepositoriesConfigKey, platformRootSchema } from '../../common/agentHostSchema.js';
+import { isAgentHostWorkspaceTrusted } from '../../common/agentHostWorkspaceTrust.js';
+import { buildClaudeInstantGrepMcpServer, claudeInstantGrepAllowList, CLAUDE_INSTANT_GREP_MCP_SERVER_NAME } from './claudeInstantGrepMcp.js';
 import { GITHUB_MCP_SERVER_NAME, resolveGitHubMcpServerConfiguration } from '../shared/githubMcpServer.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
 import { IAgentHostAuthenticationService } from '../agentHostAuthenticationService.js';
@@ -829,13 +831,11 @@ export class ClaudeAgentSession extends Disposable implements IRematerializer {
 	 * yield-restart rematerialize: the in-process MCP servers plus the
 	 * auto-approve allow-list.
 	 *
-	 * The MCP servers are the workbench client tools (which round-trip to the
-	 * workbench) plus, when a server-tool host is wired, the agent host's own
-	 * server tools (executed in-process). `mcpServers` is `undefined` when
-	 * neither is present so `Options.mcpServers` is omitted entirely and the
-	 * SDK keeps its default; `allowedTools` carries the SDK-prefixed server tool
-	 * names (so they auto-approve without prompting) and is `undefined` when no
-	 * server-tool host is wired.
+	 * The MCP servers are Instant Grep, the workbench client tools (which
+	 * round-trip to the workbench) and, when a server-tool host is wired, the
+	 * agent host's own server tools (executed in-process). `allowedTools`
+	 * carries Instant Grep's SDK-prefixed names plus the server tools that
+	 * auto-approve.
 	 *
 	 * Keeping both in one place ensures the two startup paths can never drift,
 	 * and that a newly registered server tool is wired everywhere at once.
@@ -845,18 +845,18 @@ export class ClaudeAgentSession extends Disposable implements IRematerializer {
 		serverToolHost: IAgentServerToolHost | undefined,
 	): Promise<{ mcpServers: Record<string, McpServerConfig> | undefined; deniedMcpServers: readonly ClaudeDeniedMcpServerSpec[]; allowedTools: readonly string[] | undefined; agentMergeRestrictedMcpServerNames: ReadonlySet<string> }> {
 		const externalServers = await this._buildExternalMcpServers(await this._getGitHubMcpServerConfiguration(), owner);
+		const instantGrepServer = await buildClaudeInstantGrepMcpServer(this._sdkService, () => this._instantGrepRoots(), () => this._instantGrepEnabled(), () => this._instantGrepRestricted());
 		const clientServers = await buildClientMcpServers(this.toolDiff, this._pendingClientToolCalls, this._sdkService);
 		const serverToolDefinitions = serverToolHost?.getDefinitionsForSession(owner.toString());
 		const serverToolServer = serverToolHost && serverToolDefinitions?.length
 			? await buildServerToolMcpServer(serverToolHost, this._chatChannelUri.toString(), this._sdkService, serverToolDefinitions)
 			: undefined;
-		const mcpServers = (Object.keys(externalServers.servers).length === 0 && !clientServers && !serverToolServer)
-			? undefined
-			: {
-				...externalServers.servers,
-				...(clientServers ?? {}),
-				...(serverToolServer ? { [CLAUDE_SERVER_TOOL_MCP_SERVER_NAME]: serverToolServer } : {}),
-			};
+		const mcpServers = {
+			...externalServers.servers,
+			[CLAUDE_INSTANT_GREP_MCP_SERVER_NAME]: instantGrepServer,
+			...(clientServers ?? {}),
+			...(serverToolServer ? { [CLAUDE_SERVER_TOOL_MCP_SERVER_NAME]: serverToolServer } : {}),
+		};
 		// Exclude server tools that can require user confirmation from the
 		// auto-approve allow-list so the SDK surfaces them via `canUseTool`
 		// (the host then decides per call whether to render a confirmation)
@@ -870,9 +870,26 @@ export class ClaudeAgentSession extends Disposable implements IRematerializer {
 		return {
 			mcpServers,
 			deniedMcpServers: externalServers.deniedServers,
-			allowedTools: autoApproveToolNames ? serverToolAllowList(autoApproveToolNames) : undefined,
+			allowedTools: [...claudeInstantGrepAllowList(), ...(autoApproveToolNames ? serverToolAllowList(autoApproveToolNames) : [])],
 			agentMergeRestrictedMcpServerNames: externalServers.agentMergeRestrictedServerNames,
 		};
+	}
+
+	private _instantGrepRoots(): readonly string[] {
+		return (this.workingDirectories ?? []).filter(directory => directory.scheme === 'file').map(directory => directory.fsPath);
+	}
+
+	private _instantGrepEnabled(): boolean {
+		return this._configurationService.getRootValue(platformRootSchema, InstantGrepIndexRepositoriesConfigKey) !== false;
+	}
+
+	private _instantGrepRestricted(): boolean {
+		const directory = this.workingDirectory;
+		if (!directory || directory.scheme !== 'file') {
+			return false;
+		}
+		const trust = this._configurationService.getRootValue(platformRootSchema, AgentHostWorkspaceTrustConfigKey);
+		return !isAgentHostWorkspaceTrusted(directory, trust);
 	}
 
 	private async _getGitHubMcpServerConfiguration(): Promise<IMcpServerConfiguration | undefined> {

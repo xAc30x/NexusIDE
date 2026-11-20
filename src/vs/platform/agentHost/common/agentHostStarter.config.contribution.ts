@@ -40,6 +40,7 @@ import {
 	AgentHostSystemProxyEnabledSettingId,
 	AgentHostWorkspaceSnapshotEnabledSettingId,
 	AgentHostMcpSkillsEnabledSettingId,
+	InstantGrepIndexRepositoriesSettingId,
 } from './agentService.js';
 import {
 	AgentHostAhpJsonlLoggingEnabledConfigKey,
@@ -58,6 +59,7 @@ import {
 	AgentHostSystemProxyEnabledConfigKey,
 	AgentHostWorkspaceSnapshotEnabledConfigKey,
 	AgentHostMcpSkillsEnabledConfigKey,
+	InstantGrepIndexRepositoriesConfigKey,
 } from './agentHostSchema.js';
 import { AgentMergeConfigKey, AgentMergeSettingId, AGENT_MERGE_SETTING_TAG } from './agentMerge.js';
 import { ChatProvidersConfigKey, ChatProvidersSettingId } from './agentHostChatProviders.js';
@@ -315,6 +317,13 @@ configurationRegistry.registerConfiguration({
 			tags: ['experimental', 'advanced'],
 			experiment: { mode: 'auto' },
 			agentHost: { key: AgentHostWorkspaceSnapshotEnabledConfigKey },
+		},
+		[InstantGrepIndexRepositoriesSettingId]: {
+			type: 'boolean',
+			description: nls.localize('chat.instantGrep.indexRepositories', "Index Repositories for Instant Grep. Indexes git repositories so Grep and Glob use Instant Grep. When off, or when the folder is not a git checkout, both tools use a direct scan."),
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			agentHost: { key: InstantGrepIndexRepositoriesConfigKey },
 		},
 		[AgentHostAgentOrchestrationLimitsSettingId]: {
 			type: 'string',

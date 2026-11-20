@@ -6082,9 +6082,11 @@ suite('ClaudeAgent', () => {
 		assert.deepStrictEqual({
 			startupCount: sdk.startupCallCount,
 			builtToolNames: sdk.toolCalls.map(t => t.name),
+			instantGrep: sdk.createSdkMcpServerCalls.some(call => call.name === 'instant_grep' && call.toolNames.includes('Grep') && call.toolNames.includes('Glob')),
 		}, {
 			startupCount: 1,
-			builtToolNames: ['echo'],
+			builtToolNames: ['Grep', 'Glob', 'echo'],
+			instantGrep: true,
 		});
 	});
 
@@ -6358,10 +6360,11 @@ suite('ClaudeAgent', () => {
 		// 'second' update was silently lost. Post-fix: the re-synced diff flips
 		// dirty, session.send rebinds before sending, and the new MCP server
 		// carries ['second'].
+		const clientSnapshots = sdk.createSdkMcpServerCalls.filter(call => call.name === 'client');
 		assert.deepStrictEqual({
 			startupCount: sdk.startupCallCount,
-			firstSnapshot: sdk.createSdkMcpServerCalls[0]?.toolNames,
-			lastSnapshot: sdk.createSdkMcpServerCalls.at(-1)?.toolNames,
+			firstSnapshot: clientSnapshots[0]?.toolNames,
+			lastSnapshot: clientSnapshots.at(-1)?.toolNames,
 			rebuildResume: sdk.capturedStartupOptions[1]?.resume,
 			rebuildSessionId: sdk.capturedStartupOptions[1]?.sessionId,
 		}, {
@@ -7457,7 +7460,7 @@ suite('ClaudeAgent (Phase 7 §3.4 — _handleCanUseTool)', () => {
 			result: await resultPromise,
 			confirmationTitle: confirmation?.kind === 'pending_confirmation' ? confirmation.state.confirmationTitle : undefined,
 		}, {
-			allowedTools: serverToolAllowList([SessionServerToolName.ListSessions]),
+			allowedTools: ['mcp__instant_grep__Grep', 'mcp__instant_grep__Glob', ...serverToolAllowList([SessionServerToolName.ListSessions])],
 			result: { behavior: 'allow', updatedInput: input },
 			confirmationTitle: 'Move Nested Session?',
 		});
@@ -9337,7 +9340,7 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 			explicitServers: Object.keys(startupOptions.mcpServers ?? {}).sort(),
 			deniedServers: typeof startupOptions.settings === 'string' ? undefined : startupOptions.settings?.deniedMcpServers,
 		}, {
-			explicitServers: ['enabled', 'github-mcp-server'],
+			explicitServers: ['enabled', 'github-mcp-server', 'instant_grep'],
 			deniedServers: [{
 				serverName: 'disabled',
 			}],
@@ -9391,7 +9394,7 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 			explicitServers: Object.keys(options.mcpServers ?? {}).sort(),
 			deniedServers: settings.deniedMcpServers,
 		}, {
-			explicitServers: ['additional-enabled', 'github-mcp-server'],
+			explicitServers: ['additional-enabled', 'github-mcp-server', 'instant_grep'],
 			deniedServers: [{
 				serverName: 'primary-disabled',
 			}],
@@ -9416,7 +9419,7 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 			explicitServers: Object.keys(rebuiltOptions.mcpServers ?? {}).sort(),
 			deniedServers: typeof rebuiltOptions.settings === 'string' ? undefined : rebuiltOptions.settings?.deniedMcpServers,
 		}, {
-			explicitServers: ['additional-disabled', 'additional-enabled', 'github-mcp-server'],
+			explicitServers: ['additional-disabled', 'additional-enabled', 'github-mcp-server', 'instant_grep'],
 			deniedServers: undefined,
 		});
 	});
@@ -9499,7 +9502,7 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 			explicitServers: Object.keys(options.mcpServers ?? {}).sort(),
 			hookResults: Object.fromEntries(results),
 		}, {
-			explicitServers: ['corp', 'corp.hub', 'github-mcp-server'],
+			explicitServers: ['corp', 'corp.hub', 'github-mcp-server', 'instant_grep'],
 			hookResults: {
 				'mcp__component-explorer__sessions': {},
 				'mcp__client__runTests': {},
