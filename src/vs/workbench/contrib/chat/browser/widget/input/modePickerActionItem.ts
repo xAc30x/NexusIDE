@@ -235,6 +235,9 @@ export class ModePickerActionItem extends ChatInputPickerActionViewItem {
 					if (mode.id === ChatMode.Ask.id && modes.custom.some(mode => mode.kind === ChatModeKind.Ask)) {
 						return false;
 					}
+					if (mode.id === ChatMode.Plan.id && configurationService.getValue<boolean>(ChatConfiguration.AgentEnabled) === false && !agentModeDisabledViaPolicy) {
+						return false;
+					}
 					return mode.id !== ChatMode.Agent.id && shouldShowBuiltInMode(mode, assignments.get(), agentModeDisabledViaPolicy);
 				});
 				const filteredCustomModes = modes.custom.filter(mode => {
@@ -379,9 +382,9 @@ function shouldShowBuiltInMode(mode: IChatMode, assignments: { showOldAskMode: b
 	if (!mode.isBuiltin && mode.kind === ChatModeKind.Ask) {
 		return true;
 	}
-	// The built-in "Edit" mode is deprecated, but still shown when agent mode is disabled via policy.
+	// Edit stays in the picker with Ask, Agent, and Plan.
 	if (mode.id === ChatMode.Edit.id) {
-		return agentModeDisabledViaPolicy;
+		return true;
 	}
 
 	// The "Ask" mode is a special case - we want to show either the old or new version based on the assignment or agent disablement, but not both

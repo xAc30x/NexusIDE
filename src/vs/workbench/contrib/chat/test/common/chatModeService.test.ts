@@ -117,8 +117,15 @@ suite('ChatModeService', () => {
 	test('should return builtin modes', async () => {
 		const modes = await chatModeService.getLocalModes();
 
-		assert.strictEqual(modes.builtin.length, 3);
+		assert.strictEqual(modes.builtin.length, 4);
 		assert.strictEqual(modes.custom.length, 0);
+
+		const planMode = modes.builtin.find(mode => mode.id === ChatMode.Plan.id);
+		assert.ok(planMode);
+		assert.strictEqual(planMode.kind, ChatModeKind.Agent);
+		assert.strictEqual(planMode.name.get(), 'plan');
+		assert.strictEqual(modes.findModeByName('agent')?.id, ChatMode.Agent.id);
+		assert.strictEqual(modes.findModeByName('plan')?.id, ChatMode.Plan.id);
 
 		// Check that Ask mode is always present
 		const askMode = modes.builtin.find(mode => mode.id === ChatModeKind.Ask);
@@ -134,10 +141,13 @@ suite('ChatModeService', () => {
 		let agents = await chatModeService.getLocalModes();
 		assert.ok(agents.builtin.find(agent => agent.id === ChatModeKind.Agent));
 
-		// Without tools agent - Agent mode should not be present
+		assert.ok(agents.builtin.find(agent => agent.id === ChatMode.Plan.id));
+
+		// Without tools agent - Agent and Plan should not be present
 		chatAgentService.setHasToolsAgent(false);
 		agents = await chatModeService.getLocalModes();
 		assert.strictEqual(agents.builtin.find(agent => agent.id === ChatModeKind.Agent), undefined);
+		assert.strictEqual(agents.builtin.find(agent => agent.id === ChatMode.Plan.id), undefined);
 
 		// Ask and Edit modes should always be present
 		assert.ok(agents.builtin.find(agent => agent.id === ChatModeKind.Ask));
