@@ -180,7 +180,7 @@ export async function buildOptions(
 		allowDangerouslySkipPermissions: true,
 		canUseTool: input.canUseTool,
 		onElicitation: input.onElicitation,
-		disallowedTools: ['WebSearch'],
+		disallowedTools: ['WebSearch', 'Grep', 'Glob'],
 		includePartialMessages: true,
 		forwardSubagentText: true,
 		enableFileCheckpointing: true,

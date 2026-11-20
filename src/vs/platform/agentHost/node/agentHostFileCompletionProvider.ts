@@ -18,6 +18,7 @@ import { CompletionTriggerCharacter, IAgentHostCompletionItemProvider, type IAge
 import { IAgentHostFileCompletionRoots, resolveAgentHostFileCompletionRoots } from './agentHostFileCompletionUtils.js';
 import { AgentHostStateManager } from './agentHostStateManager.js';
 import { AgentHostWorkspaceFiles } from './agentHostWorkspaceFiles.js';
+import { isBlockedForAgent, negatedMentionPaths } from './instantGrep/instantGrepIgnore.js';
 
 /** Maximum number of completion items returned per call. */
 const MAX_RESULTS = 50;
@@ -161,6 +162,31 @@ export class AgentHostFileCompletionProvider implements IAgentHostCompletionItem
 				}
 				const relativePath = extUriBiasedIgnorePathCase.relativePath(owner, uri);
 				if (relativePath === undefined) {
+					continue;
+				}
+				if (owner.scheme === 'file' && isBlockedForAgent(owner.fsPath, relativePath)) {
+					continue;
+				}
+				seen.add(key);
+				candidateCountByOwner[ownerIndex]++;
+				candidates.push({ uri, owner, ownerIndex, relativePath });
+			}
+		}
+		for (let ownerIndex = 0; ownerIndex < roots.logicalRoots.length; ownerIndex++) {
+			const owner = roots.logicalRoots[ownerIndex];
+			if (owner.scheme !== 'file') {
+				continue;
+			}
+			let extras: readonly string[] = [];
+			try {
+				extras = negatedMentionPaths(owner.fsPath);
+			} catch {
+				extras = [];
+			}
+			for (const relativePath of extras) {
+				const uri = URI.joinPath(owner, relativePath);
+				const key = extUriBiasedIgnorePathCase.getComparisonKey(uri);
+				if (seen.has(key)) {
 					continue;
 				}
 				seen.add(key);

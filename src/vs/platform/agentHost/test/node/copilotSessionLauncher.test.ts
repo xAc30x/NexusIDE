@@ -1837,7 +1837,7 @@ suite('CopilotSessionLauncher Connectors', () => {
 				warnings: logService.warnings.map(warning => warning.message),
 			}, {
 				adopted: scenario !== 'disabled',
-				featureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: scenario !== 'disabled', TGREP: true, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false, ...(scenario === 'disabled' ? {} : { MANAGED_MCP_SERVERS: true }) },
+				featureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: scenario !== 'disabled', TGREP: false, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false, ...(scenario === 'disabled' ? {} : { MANAGED_MCP_SERVERS: true }) },
 				connectorCalls: scenario === 'disabled' ? []
 					: scenario === 'unsupported' ? ['capabilities']
 						: scenario === 'noAccount' ? ['capabilities', 'account']
@@ -1942,7 +1942,7 @@ suite('CopilotSessionLauncher shared session config', () => {
 
 	for (const kind of ['create', 'resume'] as const) {
 		for (const virtual of [false, true]) {
-			test(`${kind} ${virtual ? 'uses editor-backed files and search without disk tools' : 'keeps local filesystem and search tools unchanged'}`, async () => {
+			test(`${kind} ${virtual ? 'uses editor-backed files and search without disk tools' : 'overrides disk search with Instant Grep'}`, async () => {
 				let captured: ResumeSessionConfig | undefined;
 				const raw = {
 					sessionId: 'virtual-workspace', on: () => () => { }, disconnect: async () => { },
@@ -1994,7 +1994,7 @@ suite('CopilotSessionLauncher shared session config', () => {
 					workingDirectory: virtual ? '/vscode-vfs/github/microsoft/vscode' : workingDirectory.fsPath,
 					excluded: virtual ? disallowed : [],
 					tools: virtual ? [{ name: 'grep', overridesBuiltInTool: true, skipPermission: true }, { name: 'glob', overridesBuiltInTool: true, skipPermission: true }]
-						: definitions.map(tool => ({ name: tool.name, overridesBuiltInTool: false, skipPermission: false })),
+						: [{ name: 'grep', overridesBuiltInTool: true, skipPermission: true }, { name: 'glob', overridesBuiltInTool: true, skipPermission: true }, ...definitions.map(tool => ({ name: tool.name, overridesBuiltInTool: false, skipPermission: false }))],
 					additionalDirectories: virtual ? undefined : [URI.file('/additional').fsPath],
 					discovery: !virtual,
 					skills: virtual ? [] : ['troubleshoot'],
@@ -2497,13 +2497,13 @@ suite('CopilotSessionLauncher shared session config', () => {
 				createLargeOutput: { maxSizeBytes: 20480 },
 				createManagedSettings: { permissions: managedSettingsPermissions },
 				createStrictModelEnforcement: undefined,
-				createFeatureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: true, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: true },
+				createFeatureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: false, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: true },
 				createStreaming: true,
 				createEnableSessionStore: true,
 				createRequestExtensions: true,
 				createRequestCanvasRenderer: true,
 				createExtensionSdkPath: true,
-				createToolNames: [CopilotExtensionsReloadToolName],
+				createToolNames: ['grep', 'glob', CopilotExtensionsReloadToolName],
 				createExcludedTools: [...defaultDisabledTools, `builtin:${SEMANTIC_SEARCH_TOOL_NAME}`],
 				createExcludedBuiltinAgents: [],
 				createMemory: { enabled: true },
@@ -2532,13 +2532,13 @@ suite('CopilotSessionLauncher shared session config', () => {
 				resumeLargeOutput: { maxSizeBytes: 20480 },
 				resumeManagedSettings: { permissions: managedSettingsPermissions },
 				resumeStrictModelEnforcement: undefined,
-				resumeFeatureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: true, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: true },
+				resumeFeatureFlags: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: false, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: true },
 				resumeStreaming: true,
 				resumeEnableSessionStore: true,
 				resumeRequestExtensions: true,
 				resumeRequestCanvasRenderer: true,
 				resumeExtensionSdkPath: true,
-				resumeToolNames: [CopilotExtensionsReloadToolName],
+				resumeToolNames: ['grep', 'glob', CopilotExtensionsReloadToolName],
 				resumeExcludedTools: [...defaultDisabledTools, `builtin:${SEMANTIC_SEARCH_TOOL_NAME}`],
 				resumeExcludedBuiltinAgents: [],
 				resumeMemory: { enabled: true },
@@ -2548,7 +2548,7 @@ suite('CopilotSessionLauncher shared session config', () => {
 				ephemeralImageGeneration: { enabled: true, watermark: false },
 				ephemeralCustomAgents: [],
 				ephemeralAskUserVariant: 'elicitation',
-				ephemeralTgrep: true,
+				ephemeralTgrep: false,
 				ephemeralDetachLongLivedServices: true,
 				ephemeralLocalMemoryStore: false,
 				ephemeralMcpServers: {},
@@ -2559,7 +2559,7 @@ suite('CopilotSessionLauncher shared session config', () => {
 				ephemeralRequestExtensions: false,
 				ephemeralRequestCanvasRenderer: false,
 				ephemeralExtensionSdkPath: undefined,
-				ephemeralToolNames: [],
+				ephemeralToolNames: ['grep', 'glob'],
 				mcpProjectionTraces: [
 					{
 						ephemeral: false,
@@ -2872,7 +2872,7 @@ suite('CopilotSessionLauncher canvas config', () => {
 			requestExtensions: false,
 			requestCanvasRenderer: false,
 			extensionSdkPath: undefined,
-			toolNames: [],
+			toolNames: ['grep', 'glob'],
 			wrapperCanvasRuntimeEnabled: false,
 		});
 	});
@@ -2918,7 +2918,7 @@ suite('CopilotSessionLauncher canvas config', () => {
 			requestExtensions: false,
 			requestCanvasRenderer: false,
 			extensionSdkPath: undefined,
-			toolNames: [],
+			toolNames: ['grep', 'glob'],
 			wrapperCanvasRuntimeEnabled: false,
 		});
 	});
@@ -3206,7 +3206,7 @@ suite('CopilotSessionLauncher execution subagent', () => {
 						toolUpdates: fixture.toolUpdates,
 					}, {
 						descriptorRequests: 1,
-						toolUpdates: runtimeAvailable ? [['clientRead']] : [],
+						toolUpdates: runtimeAvailable ? [['grep', 'glob', 'clientRead']] : [],
 					});
 				});
 			}
@@ -3249,7 +3249,7 @@ suite('CopilotSessionLauncher execution subagent', () => {
 			await fixture.replaceTools([{ name: 'executionSubagent', handler: () => 'done' }, { name: 'newClient', handler: () => 'done' }]);
 			assert.deepStrictEqual({ requests: fixture.descriptorRequests(), updates: fixture.toolUpdates }, {
 				requests: 1,
-				updates: [...(initiallyPresent ? [['clientRead']] : []), ['newClient']],
+				updates: [...(initiallyPresent ? [['grep', 'glob', 'clientRead']] : []), ['grep', 'glob', 'newClient']],
 			});
 		});
 	}
@@ -3903,8 +3903,14 @@ suite('CopilotSessionLauncher resume config', () => {
 			replacements: replacements.map(tools => tools.filter(tool => tool.name !== CopilotExtensionsReloadToolName)),
 			extensionRetained: replacements[0].some(tool => tool.name === CopilotExtensionsReloadToolName),
 		}, {
-			hostNames: ['computer', CopilotExtensionsReloadToolName, 'server'].sort(),
-			replacements: [[{ name: 'replacement', description: 'Launch override' }, { name: 'server', description: 'server' }, { name: 'computer', description: 'computer' }]],
+			hostNames: ['computer', CopilotExtensionsReloadToolName, 'glob', 'grep', 'server'].sort(),
+			replacements: [[
+				{ name: 'grep', description: 'Search file contents with a JavaScript regular expression. Use glob for file names.' },
+				{ name: 'glob', description: 'Find files by glob pattern. Use for file names and paths; use grep for contents.' },
+				{ name: 'replacement', description: 'Launch override' },
+				{ name: 'server', description: 'server' },
+				{ name: 'computer', description: 'computer' },
+			]],
 			extensionRetained: true,
 		});
 	});
@@ -4041,8 +4047,8 @@ suite('CopilotSessionLauncher resume config', () => {
 			ephemeral: (await build(true)).tools?.map(tool => tool.name),
 			offers,
 		}, {
-			durable: ['enable_computer_use'],
-			ephemeral: [],
+			durable: ['grep', 'glob', 'enable_computer_use'],
+			ephemeral: ['grep', 'glob'],
 			offers: 1,
 		});
 	});
@@ -4060,7 +4066,7 @@ suite('CopilotSessionLauncher resume config', () => {
 			AUTO_APPROVAL: true,
 			MCP_SKILLS: false,
 			CONNECTORS: false,
-			TGREP: true,
+			TGREP: false,
 			CONTENT_EXCLUSION: true,
 			DETACH_LONG_LIVED_SERVICES: true,
 			copilot_swe_agent_memory_in_repo_store: false,
@@ -4080,7 +4086,7 @@ suite('CopilotSessionLauncher resume config', () => {
 		});
 	});
 
-	test('enables repository-size-gated tgrep by default and ignores the removed opt-out', async () => {
+	test('keeps the runtime tgrep flag off so Instant Grep is the only repository search', async () => {
 		const store = disposables.add(new DisposableStore());
 		const defaultConfig = await buildResumeConfig(createLauncher(store, {}), { id: 'gpt-5' });
 		const legacyOptOut = await buildResumeConfig(createLauncher(store, { tgrep: false }), { id: 'gpt-5' });
@@ -4089,8 +4095,8 @@ suite('CopilotSessionLauncher resume config', () => {
 			default: defaultConfig.featureFlags?.TGREP,
 			legacyOptOut: legacyOptOut.featureFlags?.TGREP,
 		}, {
-			default: true,
-			legacyOptOut: true,
+			default: false,
+			legacyOptOut: false,
 		});
 	});
 
@@ -4164,8 +4170,8 @@ suite('CopilotSessionLauncher resume config', () => {
 			disabled: disabled.featureFlags,
 			enabled: enabled.featureFlags,
 		}, {
-			disabled: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: true, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false },
-			enabled: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: true, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false, STABILITY_ORDERED_SYSTEM_PROMPT_V2: true },
+			disabled: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: false, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false },
+			enabled: { ...catalogInstallationFeatureFlags, AUTO_APPROVAL: true, MCP_SKILLS: false, CONNECTORS: false, TGREP: false, CONTENT_EXCLUSION: true, DETACH_LONG_LIVED_SERVICES: true, ...hydraFusionFeatureFlags, copilot_swe_agent_memory_in_repo_store: false, STABILITY_ORDERED_SYSTEM_PROMPT_V2: true },
 		});
 	});
 

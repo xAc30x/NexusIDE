@@ -26,7 +26,7 @@ import { AGENT_HOST_FILE_SCHEME } from '../../common/agentPluginManager.js';
 import type { IAgentProviderSendStageRecorder } from '../../common/agentHostTelemetry.js';
 import { getByokLmSelectionModelId, resolveByokLmEnablement, type IByokLmModelInfo } from '../../common/agentHostByokLm.js';
 import { LOCAL_MODEL_SENTINEL_PROVIDER_NAME } from '../../common/localModel.js';
-import { AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostByokModelsEnabledConfigKey, AgentHostCanvasesEnabledConfigKey, AgentHostMcpConnectorsEnabledConfigKey, AgentHostMcpSkillsEnabledConfigKey, AgentHostTelemetryLevelConfigKey, AgentHostWorkspaceTrustConfigKey, agentHostConfigValueToTelemetryLevel, platformRootSchema, type AgentHostMcpServers, type IAgentHostWorkspaceTrust } from '../../common/agentHostSchema.js';
+import { AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostByokModelsEnabledConfigKey, AgentHostCanvasesEnabledConfigKey, AgentHostMcpConnectorsEnabledConfigKey, AgentHostMcpSkillsEnabledConfigKey, AgentHostTelemetryLevelConfigKey, AgentHostWorkspaceTrustConfigKey, InstantGrepIndexRepositoriesConfigKey, agentHostConfigValueToTelemetryLevel, platformRootSchema, type AgentHostMcpServers, type IAgentHostWorkspaceTrust } from '../../common/agentHostSchema.js';
 import { isAgentHostWorkspaceTrusted } from '../../common/agentHostWorkspaceTrust.js';
 import { isWorktreeUnderRepository } from '../../common/worktreePaths.js';
 import { getCopilotApprovalPolicy, isManagedWorkspaceRetrievalWithheld, isWithheldClientTool, MANAGED_WORKSPACE_RETRIEVAL_CLIENT_TOOLS } from './copilotApprovalPolicy.js';
@@ -72,6 +72,7 @@ import { ModelRouterEnabledConfigKey } from '../../common/modelRouterConfig.js';
 import type { CopilotWorkspace } from './copilotWorkspace.js';
 import type { CopilotVirtualSessionFs } from './copilotVirtualSessionFs.js';
 import { createCopilotVirtualSearchTools } from './copilotVirtualSearchTools.js';
+import { createCopilotInstantGrepTools } from './copilotInstantGrepTools.js';
 import { readAgentToolFullReferenceName, readAgentToolOrigin } from '../../common/meta/agentToolDefinitionMeta.js';
 
 export const ThinkingLevelConfigKey = 'thinkingLevel';
@@ -1455,7 +1456,7 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 			...catalogInstallationFeatureFlags,
 			CONNECTORS: copilotConnectorsEnabled,
 			MCP_SKILLS: this._configurationService.getRootValue(platformRootSchema, AgentHostMcpSkillsEnabledConfigKey) === true,
-			TGREP: plan.workspace?.kind !== 'virtual',
+			TGREP: false,
 			CONTENT_EXCLUSION: true,
 			// Attached long-lived services prevent the runtime from reaching session idle.
 			DETACH_LONG_LIVED_SERVICES: true,
@@ -1587,7 +1588,20 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 		runtime.setApprovalPolicy?.(resolved.resolved, bridgedPermissions);
 		// The overrides read files without permission checks, so they follow the managed policy that withholds workspace retrieval.
 		const virtualSearchTools = plan.virtualSessionFs && !isManagedWorkspaceRetrievalWithheld(resolved.resolved) ? createCopilotVirtualSearchTools(plan.virtualSessionFs) : [];
-		const hostToolNames = new Set([...virtualSearchTools, ...shellTools, ...serverTools, ...extensionTools, ...computerUseTools].map(tool => tool.name));
+		const instantGrepTools = plan.virtualSessionFs || isManagedWorkspaceRetrievalWithheld(resolved.resolved) ? [] : createCopilotInstantGrepTools({
+			roots: () => [plan.workingDirectory, ...(plan.additionalDirectories ?? [])].filter((directory): directory is URI => !!directory && directory.scheme === Schemas.file),
+			enabled: () => this._configurationService.getRootValue(platformRootSchema, InstantGrepIndexRepositoriesConfigKey) !== false,
+			restricted: () => {
+				const directory = plan.workingDirectory;
+				if (!directory || directory.scheme !== Schemas.file) {
+					return false;
+				}
+				const trust = this._configurationService.getRootValue(platformRootSchema, AgentHostWorkspaceTrustConfigKey);
+				return !isAgentHostWorkspaceTrusted(directory, trust);
+			},
+		});
+		const searchTools = virtualSearchTools.length ? virtualSearchTools : instantGrepTools;
+		const hostToolNames = new Set([...searchTools, ...shellTools, ...serverTools, ...extensionTools, ...computerUseTools].map(tool => tool.name));
 		const promptOverride = await resolveConfiguredPromptOverride(promptOverrideString, promptOverrideFile, this._fileService, this._logService);
 		const applyToolOverrides = (tools: readonly Tool[]) => promptOverride
 			? applyPromptOverridesFromString(promptOverride.content, tools, this._logService, promptOverride.source)
@@ -1610,7 +1624,7 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 			const names = filterClientToolNames(new Set(definitions.map(tool => tool.name)), availableTools, excludedTools);
 			const trustedNames = filterClientToolNames(trustedClientToolNames(definitions), availableTools, excludedTools);
 			const toolSearch = resolveToolSearch(trustedNames);
-			const promptOverrides = applyToolOverrides([...virtualSearchTools, ...shellTools, ...clientTools, ...serverTools, ...extensionTools, ...computerUseTools]);
+			const promptOverrides = applyToolOverrides([...searchTools, ...shellTools, ...clientTools, ...serverTools, ...extensionTools, ...computerUseTools]);
 			const promptContext: IAgentHostPromptContext = {
 				getSetting: key => this._configurationService.getRootValue(copilotCliConfigSchema, key),
 				hasClientTool: name => names.has(name) && !hostToolNames.has(name),

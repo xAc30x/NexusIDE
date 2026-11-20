@@ -661,6 +661,9 @@ export const AgentHostMarkdownPlanRichLinksEnabledConfigKey = 'markdownPlanRichL
 /** Root config key controlling the initial workspace file-name snapshot in Copilot chats. */
 export const AgentHostWorkspaceSnapshotEnabledConfigKey = 'workspaceSnapshotEnabled';
 
+/** Root config key for Index Repositories for Instant Grep. Absent means on. */
+export const InstantGrepIndexRepositoriesConfigKey = 'instantGrepIndexRepositories';
+
 /** Root config key controlling agent session creation, messaging, and recursion limits. */
 export const AgentHostAgentOrchestrationLimitsConfigKey = 'agentOrchestrationLimits';
 export type AgentHostAgentOrchestrationLimits = 'on' | 'off';
@@ -1033,6 +1036,12 @@ export const platformRootSchema = createSchema({
 		title: localize('agentHost.config.workspaceSnapshot.title', "Initial Workspace Snapshot"),
 		description: localize('agentHost.config.workspaceSnapshot.description', "Whether the first turn of a new Copilot chat includes a bounded file-name snapshot of its working directories."),
 		default: false,
+	}),
+	[InstantGrepIndexRepositoriesConfigKey]: schemaProperty<boolean>({
+		type: 'boolean',
+		title: localize('agentHost.config.instantGrep.title', "Index Repositories for Instant Grep"),
+		description: localize('agentHost.config.instantGrep.description', "Index git repositories so Grep and Glob use Instant Grep. When off, or when the folder is not a git checkout, both tools use a direct scan."),
+		default: true,
 	}),
 	[AgentHostAgentOrchestrationLimitsConfigKey]: schemaProperty<AgentHostAgentOrchestrationLimits>({
 		type: 'string',

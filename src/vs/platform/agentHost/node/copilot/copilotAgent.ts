@@ -4779,10 +4779,9 @@ export class CopilotAgent extends Disposable implements IAgent {
 				delete env['RUBBER_DUCK_AGENT'];
 			}
 
-			// Let the SDK's TGREP feature flag select indexed search for eligible repositories.
+			// Instant Grep is the only repository search. Keep the runtime's own index off.
 			deleteEnvironmentVariable(env, 'USE_TGREP');
 			deleteEnvironmentVariable(env, 'USE_BUILTIN_RIPGREP');
-			this._logService.info('[Copilot] Enabled repository-size-gated tgrep indexed search');
 
 			// Keep the SDK wrapper and native module paired within the bundled platform
 			// package. Only the runtime executable can be explicitly overridden.
