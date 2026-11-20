@@ -307,6 +307,7 @@ class ChatModes extends Disposable implements IChatModes {
 		// - It's disabled by policy (so we can show it with a lock icon)
 		// But hide it if the user manually disabled it via settings
 		if (this.chatAgentService.hasToolsAgent || this.isAgentModeDisabledByPolicy()) {
+			builtinModes.unshift(ChatMode.Plan);
 			builtinModes.unshift(ChatMode.Agent);
 		}
 		builtinModes.push(ChatMode.Edit);
@@ -706,8 +707,10 @@ export class BuiltinChatMode implements IChatMode {
 		label: string,
 		description: string,
 		icon: ThemeIcon,
+		private readonly modeId: string = kind,
+		name: string = kind,
 	) {
-		this.name = constObservable(kind);
+		this.name = constObservable(name);
 		this.label = constObservable(label);
 		this.description = observableValue('description', description);
 		this.icon = constObservable(icon);
@@ -719,8 +722,7 @@ export class BuiltinChatMode implements IChatMode {
 	}
 
 	get id(): string {
-		// Need a differentiator?
-		return this.kind;
+		return this.modeId;
 	}
 
 	/**
@@ -740,12 +742,19 @@ export namespace ChatMode {
 	export const Ask = new BuiltinChatMode(ChatModeKind.Ask, 'Ask', localize('chatDescription', "Explore and understand your code"), Codicon.question);
 	export const Edit = new BuiltinChatMode(ChatModeKind.Edit, 'Edit', localize('editsDescription', "Edit or refactor selected code"), Codicon.edit);
 	export const Agent = new BuiltinChatMode(ChatModeKind.Agent, 'Agent', localize('agentDescription', "Describe what to build"), Codicon.agent);
+	/**
+	 * Plan keeps {@link ChatModeKind.Agent} so tool plumbing stays on the agent
+	 * kind. Its id and name are `plan`, and selecting it puts a Claude session
+	 * into permission mode `plan`. Accepting the existing plan card allows edits.
+	 */
+	export const Plan = new BuiltinChatMode(ChatModeKind.Agent, 'Plan', localize('planDescription', "Plan a change before editing files"), Codicon.checklist, 'plan', 'plan');
 }
 
 export function isBuiltinChatMode(mode: IChatMode): boolean {
 	return mode.id === ChatMode.Ask.id ||
 		mode.id === ChatMode.Edit.id ||
-		mode.id === ChatMode.Agent.id;
+		mode.id === ChatMode.Agent.id ||
+		mode.id === ChatMode.Plan.id;
 }
 
 /**

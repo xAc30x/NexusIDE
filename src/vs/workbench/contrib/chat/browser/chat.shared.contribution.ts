@@ -127,6 +127,7 @@ import { ChatModelFeedbackSurveyPromptContribution } from './feedbackSurvey/chat
 import { registerChatDeveloperActions } from './actions/chatDeveloperActions.js';
 import { registerChatElicitationActions } from './actions/chatElicitationActions.js';
 import { registerChatExecuteActions } from './actions/chatExecuteActions.js';
+import './actions/chatIsolateInWorktreeAction.js';
 import { registerChatFileTreeActions } from './actions/chatFileTreeActions.js';
 import { registerChatFindActions } from './actions/chatFindActions.js';
 import { ChatGettingStartedContribution } from './actions/chatGettingStarted.js';
@@ -2565,7 +2566,7 @@ configurationRegistry.registerConfiguration({
 		[ChatConfiguration.InlineChatAgentHostEnabled]: {
 			type: 'boolean',
 			description: nls.localize('chat.inlineChat.agentHost.enabled', "Controls whether editor inline chat is backed by the Agent Host instead of the extension host. Applied on startup."),
-			default: false,
+			default: true,
 			tags: ['experimental'],
 			experiment: {
 				mode: 'startup'

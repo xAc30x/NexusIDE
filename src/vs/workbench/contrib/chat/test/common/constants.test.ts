@@ -543,6 +543,43 @@ suite('ChatConfiguration defaults', () => {
 		});
 	});
 
+	test('editor default prefers agent host Claude when that provider is registered', () => {
+		const configurationService = new TestConfigurationService({
+			[ChatConfiguration.DefaultToCopilotHarness]: true,
+		});
+		const disabledClaude = new TestConfigurationService({
+			[ChatConfiguration.DefaultToCopilotHarness]: true,
+			[AgentHostClaudeAgentEnabledSettingId]: false,
+		});
+		disposables.add(configurationService.onDidChangeConfigurationEmitter);
+		disposables.add(disabledClaude.onDidChangeConfigurationEmitter);
+		const chatSessionsService = createChatSessionsService(SessionType.AgentHostCopilot, SessionType.AgentHostClaude);
+		const storageService = disposables.add(new TestStorageService());
+		const virtualWorkspace = createWorkspace(URI.parse('vscode-vfs://github/microsoft/vscode'));
+
+		assert.deepStrictEqual({
+			local: getComputedDefaultSessionType(configurationService, chatSessionsService, localWorkspace, true),
+			virtual: getComputedDefaultSessionType(configurationService, chatSessionsService, virtualWorkspace, true),
+			sandbox: getComputedDefaultSessionType(configurationService, chatSessionsService, localWorkspace, true, true),
+			unreachable: getComputedDefaultSessionType(configurationService, createChatSessionsService(SessionType.AgentHostCopilot), localWorkspace, true),
+			disabled: getComputedDefaultSessionType(disabledClaude, chatSessionsService, localWorkspace, true),
+			remembered: getDefaultNewChatSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true),
+		}, {
+			local: SessionType.AgentHostClaude,
+			virtual: SessionType.AgentHostCopilot,
+			sandbox: SessionType.AgentHostCopilot,
+			unreachable: SessionType.AgentHostCopilot,
+			disabled: SessionType.AgentHostCopilot,
+			remembered: SessionType.AgentHostClaude,
+		});
+
+		storeUserSelectedSessionType(storageService, SessionType.AgentHostCodex);
+		assert.strictEqual(
+			getDefaultNewChatSessionType(configurationService, createChatSessionsService(SessionType.AgentHostCopilot, SessionType.AgentHostClaude, SessionType.AgentHostCodex), storageService, localWorkspace, true),
+			SessionType.AgentHostCodex,
+		);
+	});
+
 	test('editor default prefers agent host Copilot when the agent host is enabled', () => {
 		const configurationService = new TestConfigurationService({
 			[ChatConfiguration.DefaultToCopilotHarness]: Registry.as<IConfigurationRegistry>(Extensions.Configuration).getConfigurationProperties()[ChatConfiguration.DefaultToCopilotHarness].default,
@@ -747,16 +784,16 @@ suite('ChatConfiguration defaults', () => {
 		const chatSessionsService = createChatSessionsService(SessionType.AgentHostCopilot, SessionType.AgentHostClaude);
 		const storageService = disposables.add(new TestStorageService());
 
-		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostClaude, true);
+		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostCopilot, true);
 
 		assert.deepStrictEqual({
 			computed: getComputedDefaultSessionType(configurationService, chatSessionsService, localWorkspace, true),
 			remembered: getRememberedSessionType(storageService),
 			rememberedAware: resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: localChatSessionType }),
 		}, {
-			computed: SessionType.AgentHostCopilot,
-			remembered: SessionType.AgentHostClaude,
-			rememberedAware: { sessionType: SessionType.AgentHostClaude },
+			computed: SessionType.AgentHostClaude,
+			remembered: SessionType.AgentHostCopilot,
+			rememberedAware: { sessionType: SessionType.AgentHostCopilot },
 		});
 	});
 
@@ -809,7 +846,7 @@ suite('ChatConfiguration defaults', () => {
 			firstResolve: resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: localChatSessionType }),
 			secondResolve: resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: localChatSessionType }),
 		}, {
-			pickerFallback: SessionType.AgentHostCopilot,
+			pickerFallback: SessionType.AgentHostClaude,
 			directCurrent: SessionType.AgentHostCopilot,
 			firstResolve: { sessionType: SessionType.AgentHostCopilot },
 			secondResolve: { sessionType: SessionType.AgentHostCopilot },
@@ -863,7 +900,7 @@ suite('ChatConfiguration defaults', () => {
 
 		const currentClaude = resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: SessionType.AgentHostClaude });
 		const currentCodex = resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: SessionType.AgentHostCodex });
-		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostClaude, true);
+		storeUserSelectedSessionType(storageService, SessionType.AgentHostClaude);
 		const rememberedClaude = resolveSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: localChatSessionType });
 		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostCodex, true);
 
@@ -887,17 +924,17 @@ suite('ChatConfiguration defaults', () => {
 		const chatSessionsService = createChatSessionsService(SessionType.AgentHostCopilot, SessionType.AgentHostClaude);
 		const storageService = disposables.add(new TestStorageService());
 
-		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostClaude, true);
 		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostCopilot, true);
+		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostClaude, true);
 
 		assert.deepStrictEqual({
 			computed: getComputedDefaultSessionType(configurationService, chatSessionsService, localWorkspace, true),
 			remembered: getRememberedSessionType(storageService),
 			rememberedAware: getDefaultNewChatSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true),
 		}, {
-			computed: SessionType.AgentHostCopilot,
+			computed: SessionType.AgentHostClaude,
 			remembered: undefined,
-			rememberedAware: SessionType.AgentHostCopilot,
+			rememberedAware: SessionType.AgentHostClaude,
 		});
 	});
 
@@ -1265,7 +1302,9 @@ suite('ChatConfiguration defaults', () => {
 		const storageService = disposables.add(new TestStorageService());
 
 		const currentCodex = getDefaultNewChatSessionType(configurationService, chatSessionsService, storageService, localWorkspace, true, { currentSessionType: SessionType.AgentHostCodex }, true);
-		recordUserSelectedSessionType(storageService, configurationService, chatSessionsService, localWorkspace, SessionType.AgentHostClaude, true);
+		// Claude is the computed default, so recording it would clear storage.
+		// A remembered Claude selection must still survive the sandbox floor.
+		storeUserSelectedSessionType(storageService, SessionType.AgentHostClaude);
 
 		assert.deepStrictEqual({
 			currentCodex,
@@ -1345,7 +1384,7 @@ suite('ChatConfiguration defaults', () => {
 			remembered: { sessionType: SessionType.AgentHostClaude, selectionReason: 'rememberedSelection' },
 			current: { sessionType: SessionType.AgentHostClaude, selectionReason: 'currentSession' },
 			copilotPreference: { sessionType: SessionType.AgentHostCopilot, selectionReason: 'copilotPreference' },
-			computed: { sessionType: localChatSessionType, selectionReason: 'computedDefault' },
+			computed: { sessionType: SessionType.AgentHostClaude, selectionReason: 'computedDefault' },
 		});
 	});
 
