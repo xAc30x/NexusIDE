@@ -2565,7 +2565,7 @@ configurationRegistry.registerConfiguration({
 		[ChatConfiguration.InlineChatAgentHostEnabled]: {
 			type: 'boolean',
 			description: nls.localize('chat.inlineChat.agentHost.enabled', "Controls whether editor inline chat is backed by the Agent Host instead of the extension host. Applied on startup."),
-			default: false,
+			default: true,
 			tags: ['experimental'],
 			experiment: {
 				mode: 'startup'

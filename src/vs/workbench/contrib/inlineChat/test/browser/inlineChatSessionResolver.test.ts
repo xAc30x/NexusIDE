@@ -44,6 +44,7 @@ class TestModelReference extends mock<IChatModelReference>() {
 }
 
 class TestConfigurationService extends mock<IConfigurationService>() {
+	// Matches the product default of chat.inlineChat.agentHost.enabled.
 	agentHostEnabled = true;
 
 	override getValue<T>(): T {
