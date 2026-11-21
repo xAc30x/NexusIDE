@@ -5,9 +5,10 @@ NexusIDE is built on Code - OSS, the open-source core of Visual Studio Code.
 | Item | Value |
 | --- | --- |
 | Upstream repository | https://github.com/microsoft/vscode |
-| Release tag | `1.146.0` |
-| Commit | `69047191fc427f2f92828279aae1d90d8eeda7ab` |
-| Imported on | 2026-11-17 |
+| Release tag | `1.147.0` |
+| Commit | `8a14f0cc1b08d531eb83255ea3764ae22aa932b5` |
+| Imported on | 2026-11-17 (`1.146.0`, `69047191fc427f2f92828279aae1d90d8eeda7ab`) |
+| Updated on | 2026-11-21 |
 | License | MIT (see `LICENSE.txt` and `ThirdPartyNotices.txt`) |
 
 The source was copied as a single snapshot commit. Microsoft's git history was not
